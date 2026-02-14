@@ -20,9 +20,9 @@ COPY api/ api/
 COPY internal/ internal/
 COPY pkg/ pkg/
 RUN go mod download && \
-    CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+    CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ${APP_ROOT}/manager cmd/main.go
 
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:3aea404f9e7a55d36d93c15af9bc0e4965b871ef63c3bbd4a0746bffdf5203eb as deploy
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:3aea404f9e7a55d36d93c15af9bc0e4965b871ef63c3bbd4a0746bffdf5203eb AS deploy
 
 ARG VERSION
 ARG APP_BUILD_ROOT
@@ -45,7 +45,7 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 LABEL features.operators.openshift.io/cni="false"
 LABEL features.operators.openshift.io/disconnected="true"
-LABEL features.operators.openshift.io/fips-compliant="false"
+LABEL features.operators.openshift.io/fips-compliant="true"
 LABEL features.operators.openshift.io/proxy-aware="true"
 LABEL features.operators.openshift.io/cnf="false"
 LABEL features.operators.openshift.io/csi="false"
