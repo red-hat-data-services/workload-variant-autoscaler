@@ -5,6 +5,11 @@
 
 
 The Workload Variant Autoscaler (WVA) is a Kubernetes-based global autoscaler for inference model servers serving LLMs. WVA works alongside standard Kubernetes HPA autoscaler and external autoscalers like KEDA to scale the object supporting scale subresource. The high-level details of the algorithm are [here](https://github.com/llm-d/llm-d-workload-variant-autoscaler/blob/main/docs/saturation-scaling-config.md ). It determines optimal replica counts for given request traffic loads for inference servers by considering constraints such as GPU count (cluster resources), energy-budget and performance-budget (latency/throughput).
+
+### What is a variant?
+
+In WVA, a **variant** is a way of serving a given model: a scale target (Deployment, StatefulSet, or LWS) with a particular combination of hardware, runtimes, and serving approach. Variants for the same model share the same base model (e.g. meta/llama-3.1-8b); LoRA adapters can differ per variant. Each variant is a distinct setup—e.g. different accelerators (A100, H100, L4), parallelism, or performance requirements. Create one `VariantAutoscaling` per variant; when several variants serve the same model, WVA chooses which to scale (e.g. add capacity on the cheapest variant, remove it from the most expensive). See [Configuration](docs/user-guide/configuration.md) and [Saturation Analyzer](docs/saturation-analyzer.md) for details.
+
 <!--
 <![Architecture](docs/design/diagrams/inferno-WVA-design.png)>
 -->
@@ -15,46 +20,6 @@ The Workload Variant Autoscaler (WVA) is a Kubernetes-based global autoscaler fo
 <!-- 
 - **Performance Modeling**: Uses queueing theory (M/M/1/k, M/G/1 models) for accurate latency and throughput prediction
 - **Multi-Model Support**: Manages multiple models with different service classes and priorities -->
-
-## Quick Start
-
-### Prerequisites
-
-- Kubernetes v1.31.0+ (or OpenShift 4.18+)
-- Helm 3.x
-- kubectl
-
-### Install with Helm (Recommended)
-
-```bash
-# Add the WVA Helm repository (when published)
-helm upgrade -i workload-variant-autoscaler ./charts/workload-variant-autoscaler \
-  --namespace workload-variant-autoscaler-system \
-  --set-file prometheus.caCert=/tmp/prometheus-ca.crt \
-  --set variantAutoscaling.accelerator=L40S \
-  --set variantAutoscaling.modelID=unsloth/Meta-Llama-3.1-8B \
-  --set vllmService.enabled=true \
-  --set vllmService.nodePort=30000
-  --create-namespace
-```
-
-### Try it Locally with Kind (No GPU Required!)
-
-```bash
-# Deploy WVA with llm-d infrastructure on a local Kind cluster
-make deploy-wva-emulated-on-kind CREATE_CLUSTER=true DEPLOY_LLM_D=true
-
-# This creates a Kind cluster with emulated GPUs and deploys:
-# - WVA controller
-# - llm-d infrastructure (simulation mode)
-# - Prometheus and monitoring stack
-# - vLLM emulator for testing
-```
-
-**Works on Mac (Apple Silicon/Intel) and Windows** - no physical GPUs needed!
-Perfect for development and testing with GPU emulation.
-
-See the [Installation Guide](docs/user-guide/installation.md) for detailed instructions.
 
 ## Documentation
 
@@ -87,10 +52,6 @@ See the [Installation Guide](docs/user-guide/installation.md) for detailed instr
 - [Development Setup](docs/developer-guide/development.md)
 - [Contributing](CONTRIBUTING.md)
 -->
-### Deployment Options
-- [Kubernetes Deployment](deploy/kubernetes/README.md)
-- [OpenShift Deployment](deploy/openshift/README.md)
-- [Local Development (Kind Emulator)](deploy/kind-emulator/README.md)
 
 <!--
 
@@ -172,7 +133,7 @@ helm upgrade workload-variant-autoscaler ./charts/workload-variant-autoscaler \
 
 ### Breaking Changes
 
-#### v0.5.0 (upcoming)
+#### v0.5.1
 - **VariantAutoscaling CRD**: Added `scaleTargetRef` field as **required**. v0.4.1 VariantAutoscaling resources without `scaleTargetRef` must be updated before upgrading:
   - **Impact on Scale-to-Zero**: VAs without `scaleTargetRef` will not scale to zero properly, even with HPAScaleToZero enabled and HPA `minReplicas: 0`, because the HPA cannot reference the target deployment.
   - **Migration**: Update existing VAs to include `scaleTargetRef`:
