@@ -9,7 +9,7 @@ wva:
 
   image:
     repository: ghcr.io/llm-d/llm-d-workload-variant-autoscaler
-    tag: v0.5.0
+    tag: v0.5.1
   imagePullPolicy: Always
 
   metrics:
@@ -118,6 +118,8 @@ hpa:
 
 vllmService:
   enabled: true
+  port: 8200
+  targetPort: 8200
   nodePort: 30000
   interval: 15s
   scheme: http  # vLLM emulator runs on HTTP

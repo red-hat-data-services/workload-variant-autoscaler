@@ -21,7 +21,6 @@ spec:
     matchLabels:
       control-plane: controller-manager
       app.kubernetes.io/name: workload-variant-autoscaler
-  replicas: 2
   template:
     metadata:
       annotations:
@@ -143,6 +142,9 @@ spec:
         - name: prometheus-client-certs
           mountPath: /etc/prometheus-certs
           readOnly: true
+        - name: epp-metrics-token
+          mountPath: /var/run/secrets/epp-metrics
+          readOnly: true
       volumes:
       - name: prometheus-client-certs
         secret:
@@ -155,5 +157,9 @@ spec:
             path: tls.crt
           - key: tls.key
             path: tls.key
+      - name: epp-metrics-token
+        secret:
+          secretName: epp-metrics-token
+          defaultMode: 420
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
