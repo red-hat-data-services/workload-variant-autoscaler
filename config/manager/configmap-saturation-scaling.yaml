@@ -13,6 +13,8 @@ metadata:
   labels:
     app.kubernetes.io/name: workload-variant-autoscaler
     app.kubernetes.io/managed-by: kustomize
+  annotations:
+    opendatahub.io/managed: "false" 
 data:
   # Global defaults applied to all variants unless overridden
   default: |
