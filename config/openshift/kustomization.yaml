@@ -5,6 +5,7 @@ resources:
 - ../default
 - cluster-monitoring-view-binding.yaml
 - metrics-reader-token.yaml
+- prometheus-metrics-auth-binding.yaml
 
 patches:
 - path: configmap-patch.yaml
