@@ -23,7 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	promoperator "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -85,12 +85,12 @@ var _ = Describe("VariantAutoscalings Controller", func() {
 					},
 					// TODO(user): Specify other spec details if needed.
 					Spec: llmdVariantAutoscalingV1alpha1.VariantAutoscalingSpec{
-						ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+						ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 							Kind: "Deployment",
 							Name: resourceName,
 						},
-						// Example spec fields, adjust as necessary
-						ModelID: "default-default",
+						ModelID:     "default-default",
+						MaxReplicas: 2,
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -192,12 +192,12 @@ var _ = Describe("VariantAutoscalings Controller", func() {
 					Namespace: "default",
 				},
 				Spec: llmdVariantAutoscalingV1alpha1.VariantAutoscalingSpec{
-					ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 						Kind: "Deployment",
 						Name: "invalid-model-id",
 					},
-					ModelID: "", // Empty ModelID
-
+					ModelID:     "", // Empty ModelID
+					MaxReplicas: 2,
 				},
 			}
 			err := k8sClient.Create(ctx, resource)
@@ -310,11 +310,12 @@ var _ = Describe("VariantAutoscalings Controller", func() {
 					Namespace: "default",
 				},
 				Spec: llmdVariantAutoscalingV1alpha1.VariantAutoscalingSpec{
-					ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 						Kind: "Deployment",
 						Name: resourceName,
 					},
-					ModelID: "default-default",
+					ModelID:     "default-default",
+					MaxReplicas: 2,
 				},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -402,11 +403,12 @@ var _ = Describe("VariantAutoscalings Controller", func() {
 					Namespace: "default",
 				},
 				Spec: llmdVariantAutoscalingV1alpha1.VariantAutoscalingSpec{
-					ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 						Kind: "Deployment",
 						Name: resourceName,
 					},
-					ModelID: "test-model",
+					ModelID:     "test-model",
+					MaxReplicas: 2,
 				},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -486,7 +488,7 @@ var _ = Describe("VariantAutoscalings Controller", func() {
 
 			// DesiredOptimizedAlloc should remain at zero values (not set)
 			Expect(resource.Status.DesiredOptimizedAlloc.Accelerator).To(BeEmpty(), "Accelerator should remain empty")
-			Expect(resource.Status.DesiredOptimizedAlloc.NumReplicas).To(Equal(0), "NumReplicas should remain 0")
+			Expect(resource.Status.DesiredOptimizedAlloc.NumReplicas).To(BeNil(), "NumReplicas should remain nil")
 		})
 	})
 
