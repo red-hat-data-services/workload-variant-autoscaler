@@ -19,7 +19,7 @@ By default, the controller watches **all namespaces** in the cluster for:
 - VariantAutoscaling resources
 - Namespace-local ConfigMaps (in tracked namespaces)
 
-This is the recommended mode for most deployments.
+This is the default for the kustomize deployment (`config/default`). No flags are required. To restrict the controller to a single namespace, use `--watch-namespace` (see below).
 
 **Characteristics:**
 - Watches all namespaces by default
