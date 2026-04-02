@@ -6,6 +6,7 @@ controller:
 
 wva:
   enabled: true
+  replicaCount: 2
 
   image:
     repository: ghcr.io/llm-d/llm-d-workload-variant-autoscaler
@@ -39,7 +40,7 @@ wva:
     # Development security configuration (relaxed for easier development)
     tls:
       insecureSkipVerify: true   # Development: true, Production: false
-      caCertPath: "/etc/ssl/certs/prometheus-ca.crt"
+      # caCertPath: "/etc/ssl/certs/prometheus-ca.crt"  # Only used when caCert is provided
     # caCert: |  # Uncomment and provide your CA certificate
     #   -----BEGIN CERTIFICATE-----
     #   YOUR_CA_CERTIFICATE_HERE
@@ -83,6 +84,9 @@ llmd:
 
 va:
   enabled: true
+  # accelerator: Optional. If not specified, it will be auto-discovered
+  # from target deployment. If specified, it will be used as fall-back value if it can't 
+  # be discovered.
   accelerator: H100
   # Cost per replica in arbitrary units (higher = more expensive to scale)
   # Used by saturation analysis to weight scaling decisions across variants
@@ -97,7 +101,7 @@ hpa:
   # minReplicas: 1 is the safe default that prevents scale-to-zero
   # Set to 0 when wva.scaleToZero is enabled
   minReplicas: 1
-  maxReplicas: 10
+  maxReplicas: 2
   targetAverageValue: "1"
   # HPA scaling behavior configuration
   behavior:

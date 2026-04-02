@@ -159,6 +159,8 @@ This deploys:
 - Prometheus stack and Prometheus Adapter (or KEDA when `SCALER_BACKEND=keda`)
 - **No** VariantAutoscaling, HPA, or model services (tests create these)
 
+When `E2E_TESTS_ENABLED=true` (or `ENABLE_SCALE_TO_ZERO=true`), the deploy script also enables **GIE queuing** so scale-from-zero tests can run: it patches the EPP with `ENABLE_EXPERIMENTAL_FLOW_CONTROL_LAYER=true` and applies an **InferenceObjective** (`e2e-default`) that references the default InferencePool. This ensures the metric `inference_extension_flow_control_queue_size` is populated when requests hit the gateway.
+
 Alternatively, use the Makefile to deploy infra and run tests in one go:
 
 ```bash
@@ -257,6 +259,21 @@ Runs OpenShift E2E tests on dedicated cluster:
 - Runs multi-model tests
 - On failure: automatically scales down GPU workloads while preserving debugging resources (VA, HPA, logs)
 - Smart resource management frees GPUs for other PRs without manual intervention
+
+#### Triggering E2E via PR Comments
+
+You can trigger E2E runs by commenting on a PR:
+
+| Comment | Workflow | Who can use | Effect |
+|--------|----------|-------------|--------|
+| **`/ok-to-test`** | `ci-pr-checks.yaml` + `ci-e2e-openshift.yaml` | Users with write access | Runs the **full** Kind E2E suite **and** the OpenShift E2E (GPU) run on this PR. On fork PRs, this is required before OpenShift E2E can run. |
+| **`/retest`** | `ci-e2e-openshift.yaml` | Users with write access | **OpenShift E2E only:** Re-run the OpenShift E2E workflow (e.g. after a failure, flake, or new commits). Same workflow as `/ok-to-test`, different trigger intent. |
+
+**When to use:**
+
+- **`/ok-to-test`**: Comment this when you want the full E2E suite to run on your PR. It triggers both the full Kind E2E (instead of smoke only) and the OpenShift E2E. By default, PRs only run smoke E2E on Kind.
+- **`/retest`**: Use to re-run only the OpenShift E2E workflow (e.g. after a failure or new commits).
+- **Fork PRs**: If you opened a PR from a fork, OpenShift E2E will not run until a maintainer or admin comments **`/ok-to-test`**. Branch protection should require the **e2e-openshift** status check so merge stays blocked until that run passes (the gate check is intentionally green on fork PRs to avoid a false failure that cannot be updated from upstream).
 
 ### Running CI Tests Locally
 

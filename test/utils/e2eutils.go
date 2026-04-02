@@ -41,10 +41,10 @@ import (
 	promAPI "github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
-	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -398,8 +398,8 @@ func GetProjectDir() (string, error) {
 		return wd, err
 	}
 
-	// Handle test package path (consolidated e2e suite)
-	m := regexp.MustCompile(`/test/e2e`)
+	// Handle test package paths (e2e suite, benchmark suite, etc.)
+	m := regexp.MustCompile(`/test/[^/]+$`)
 	wd = m.ReplaceAllString(wd, "")
 	return wd, nil
 }
@@ -719,8 +719,8 @@ func SetUpPortForward(k8sClient *kubernetes.Clientset, ctx context.Context, serv
 func VerifyPortForwardReadiness(ctx context.Context, localPort int, request string) error {
 	var client *http.Client
 	tr := &http.Transport{}
-	// Prometheus uses a self-signed certificate for tests, so we need to skip verification when accessing its HTTPS endpoint.
-	if request == fmt.Sprintf("https://localhost:%d/api/v1/query?query=up", localPort) {
+	// Skip TLS verification for HTTPS endpoints (e.g. Prometheus uses self-signed certs in tests).
+	if strings.HasPrefix(request, "https://") {
 		tr = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
@@ -854,9 +854,13 @@ func LogVariantAutoscalingStatus(ctx context.Context, vaName, namespace string, 
 		return err
 	}
 
-	_, err = fmt.Fprintf(writer, "Desired Optimized Allocation for VA: %s - Replicas: %d, Accelerator: %s\n",
+	replicas := "<nil>"
+	if nr := variantAutoscaling.Status.DesiredOptimizedAlloc.NumReplicas; nr != nil {
+		replicas = fmt.Sprintf("%d", *nr)
+	}
+	_, err = fmt.Fprintf(writer, "Desired Optimized Allocation for VA: %s - Replicas: %s, Accelerator: %s\n",
 		variantAutoscaling.Name,
-		variantAutoscaling.Status.DesiredOptimizedAlloc.NumReplicas,
+		replicas,
 		variantAutoscaling.Status.DesiredOptimizedAlloc.Accelerator)
 	if err != nil {
 		return err
@@ -876,7 +880,7 @@ func CreateVariantAutoscalingResource(namespace, resourceName, scaleTargetRefNam
 			},
 		},
 		Spec: v1alpha1.VariantAutoscalingSpec{
-			ScaleTargetRef: autoscalingv1.CrossVersionObjectReference{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 				APIVersion: "apps/v1",
 				Kind:       "Deployment",
 				Name:       scaleTargetRefName,
@@ -967,6 +971,11 @@ type PrometheusQueryResult struct {
 // PrometheusClient wraps the official Prometheus client
 type PrometheusClient struct {
 	client promv1.API
+}
+
+// API returns the underlying Prometheus v1 API for advanced queries (e.g., QueryRange).
+func (p *PrometheusClient) API() promv1.API {
+	return p.client
 }
 
 // creates a new Prometheus client for e2e tests
@@ -1244,4 +1253,48 @@ func SetupTestEnvironment(image string, numNodes, gpusPerNode int, gpuTypes stri
 	gom.Expect(os.Setenv("DEPLOY_VA", "false")).To(gom.Succeed())                  // tests create their own VariantAutoscaling resources
 	gom.Expect(os.Setenv("DEPLOY_HPA", "false")).To(gom.Succeed())                 // tests create their own HPAs if needed
 	gom.Expect(os.Setenv("VLLM_SVC_ENABLED", "false")).To(gom.Succeed())           // tests deploy their own Service
+}
+
+// DeleteAllVariantAutoscalings deletes all VariantAutoscaling objects in a namespace
+// and waits for them to be fully removed. This is useful for ensuring a clean test state.
+// Returns the number of VAs that were deleted.
+func DeleteAllVariantAutoscalings(ctx context.Context, crClient client.Client, namespace string) (int, error) {
+	vaList := &v1alpha1.VariantAutoscalingList{}
+	if err := crClient.List(ctx, vaList, client.InNamespace(namespace)); err != nil {
+		return 0, fmt.Errorf("failed to list VariantAutoscaling objects: %w", err)
+	}
+
+	if len(vaList.Items) == 0 {
+		return 0, nil
+	}
+
+	deletedCount := 0
+	for i := range vaList.Items {
+		va := &vaList.Items[i]
+		if err := crClient.Delete(ctx, va); err != nil {
+			if errors.IsNotFound(err) {
+				continue // Already deleted
+			}
+			return deletedCount, fmt.Errorf("failed to delete VA %s: %w", va.Name, err)
+		}
+		deletedCount++
+	}
+
+	// Wait for all VAs to be fully deleted (with timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	err := wait.PollUntilContextTimeout(waitCtx, 2*time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		remainingVAs := &v1alpha1.VariantAutoscalingList{}
+		if err := crClient.List(ctx, remainingVAs, client.InNamespace(namespace)); err != nil {
+			return false, err
+		}
+		return len(remainingVAs.Items) == 0, nil
+	})
+
+	if err != nil {
+		return deletedCount, fmt.Errorf("timeout waiting for VAs to be deleted: %w", err)
+	}
+
+	return deletedCount, nil
 }

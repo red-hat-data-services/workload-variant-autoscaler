@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -122,7 +123,7 @@ func (e *Engine) optimize(ctx context.Context) error {
 	logger := log.FromContext(ctx)
 
 	// Get all inactive (replicas == 0) VAs
-	inactiveVAs, err := utils.InactiveVariantAutoscaling(ctx, e.client)
+	inactiveVAs, deployments, err := utils.InactiveVariantAutoscaling(ctx, e.client)
 	if err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ variantLoop:
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			err := e.processInactiveVariant(ctx, variant, 1)
+			err := e.processInactiveVariant(ctx, deployments, variant, 1)
 			if err != nil {
 				logger.V(logging.DEBUG).Error(err, "Error Processing variant", "name", variant.Name)
 				errorCh <- err
@@ -194,7 +195,7 @@ variantLoop:
 }
 
 // ProcessInactiveVariant processes a single inactive VariantAutoscaling resource.
-func (e *Engine) processInactiveVariant(ctx context.Context, va wvav1alpha1.VariantAutoscaling, targetWorkloadReplicas int) error {
+func (e *Engine) processInactiveVariant(ctx context.Context, deployments map[string]*appsv1.Deployment, va wvav1alpha1.VariantAutoscaling, targetWorkloadReplicas int) error {
 	logger := log.FromContext(ctx)
 	objAPI := va.GetScaleTargetAPI()
 	objKind := va.GetScaleTargetKind()
@@ -238,6 +239,10 @@ func (e *Engine) processInactiveVariant(ctx context.Context, va wvav1alpha1.Vari
 	// Use EPP source from registry
 	eppSource := e.Datastore.PoolGetMetricsSource(pool.Name)
 	if eppSource == nil {
+		logger.Info("Scale-from-zero: skipping VA, EPP metrics source not found in datastore",
+			"va", va.Name,
+			"namespace", va.Namespace,
+			"pool", pool.Name)
 		return errors.New("endpointpicker metrics source not found in datastore")
 	}
 
@@ -263,7 +268,11 @@ func (e *Engine) processInactiveVariant(ctx context.Context, va wvav1alpha1.Vari
 	}
 
 	if !pendingRequestExist {
-		logger.V(logging.DEBUG).Info("No pending requests found in the flowcontrol queue - skipping scaling up from zero")
+		// Scale-from-zero loop runs every 100ms; log at DEBUG to avoid flooding (10/sec per inactive VA).
+		logger.V(logging.DEBUG).Info("Scale-from-zero: skipping VA, no pending requests in flow control queue",
+			"va", va.Name,
+			"namespace", va.Namespace,
+			"modelID", va.Spec.ModelID)
 		return nil
 	}
 
@@ -282,9 +291,13 @@ func (e *Engine) processInactiveVariant(ctx context.Context, va wvav1alpha1.Vari
 	var accelerator string
 	accelerator = va.Status.DesiredOptimizedAlloc.Accelerator
 	if accelerator == "" {
-		// Try to get from VA labels as last resort
-		if val, ok := va.Labels["inference.optimization/acceleratorName"]; ok && val != "" {
-			accelerator = val
+		// Try to get from deployment nodeSelector/nodeAffinity, or VA labels
+		deploymentKey := utils.GetNamespacedKey(va.Namespace, va.GetScaleTargetName())
+		if deployment, found := deployments[deploymentKey]; found {
+			accelerator = utils.GetAcceleratorNameFromDeployment(&va, deployment)
+		} else {
+			// Deployment not cached, fall back to VA label via nil deployment
+			accelerator = utils.GetAcceleratorNameFromDeployment(&va, nil)
 		}
 	}
 
@@ -333,8 +346,9 @@ func (e *Engine) processInactiveVariant(ctx context.Context, va wvav1alpha1.Vari
 	}
 
 	// 3. Updates VA status.
+	numReplicas := int32(targetWorkloadReplicas)
 	va.Status.DesiredOptimizedAlloc = wvav1alpha1.OptimizedAlloc{
-		NumReplicas: targetWorkloadReplicas,
+		NumReplicas: &numReplicas,
 		LastRunTime: metav1.Now(),
 		Accelerator: accelerator,
 	}
@@ -352,6 +366,13 @@ func (e *Engine) processInactiveVariant(ctx context.Context, va wvav1alpha1.Vari
 	common.DecisionTrigger <- event.GenericEvent{
 		Object: &va,
 	}
+
+	// Log scaling decision for E2E and operators (mirrors saturation engine "Applied ... via shared cache").
+	logger.Info("Scale-from-zero decision written to cache",
+		"va", va.Name,
+		"namespace", va.Namespace,
+		"targetReplicas", targetWorkloadReplicas,
+		"reason", reason)
 
 	return nil
 }

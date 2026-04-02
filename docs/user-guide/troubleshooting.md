@@ -68,7 +68,7 @@ For more information on multi-controller setups, see the [Multi-Controller Isola
 
 ### 3. Single-Namespace Mode
 
-If the controller is running with the `--watch-namespace` flag, it will **ONLY** watch that specific namespace and ignore all others.
+By default, the controller watches **all namespaces** — the `--watch-namespace` flag is not set in the default kustomize deployment. If you (or a downstream overlay) added `--watch-namespace`, the controller will **ONLY** watch that specific namespace and ignore all others.
 
 **Check if single-namespace mode is enabled:**
 
@@ -77,11 +77,13 @@ kubectl get deployment -n <controller-namespace> workload-variant-autoscaler-con
   -o jsonpath='{.spec.template.spec.containers[0].args}' | grep watch-namespace
 ```
 
+If nothing is returned, the controller is already watching all namespaces and this is not the issue.
+
 **Resolution:**
 
 Either:
 
-**Option A:** Remove the `--watch-namespace` flag to watch all namespaces:
+**Option A:** Remove the `--watch-namespace` flag to restore the default all-namespace behavior:
 
 Edit the controller deployment and remove `--watch-namespace` from the container args.
 
