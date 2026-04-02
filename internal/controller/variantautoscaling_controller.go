@@ -182,7 +182,15 @@ func (r *VariantAutoscalingReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Process Engine Decisions from Shared Cache
 	// This mechanism allows the Engine to trigger updates without touching the API server directly.
 	if decision, ok := common.DecisionCache.Get(va.Name, va.Namespace); ok {
-		logger.Info("Found decision in cache", "va", va.Name, "namespace", va.Namespace, "metricsAvailable", decision.MetricsAvailable)
+		// Log scaling outcome and reason for E2E and operator debugging (why did/didn't scaling happen).
+		logger.Info("Applying scaling decision from cache",
+			"va", va.Name,
+			"namespace", va.Namespace,
+			"desiredReplicas", decision.TargetReplicas,
+			"metricsAvailable", decision.MetricsAvailable,
+			"metricsReason", decision.MetricsReason,
+			"metricsMessage", decision.MetricsMessage,
+			"reason", decision.Reason)
 		// Only apply if the decision is fresher than the last one applied or if we haven't applied it
 		// Note: We blindly apply for now, assuming the Engine acts as the source of truth for "Desired" state
 		numReplicas, accelerator, lastRunTime := common.DecisionToOptimizedAlloc(decision)
@@ -239,8 +247,8 @@ func (r *VariantAutoscalingReconciler) Reconcile(ctx context.Context, req ctrl.R
 // fullDesiredAllocPatchBase returns a patch base that forces the full
 // desiredOptimizedAlloc object into the JSON merge patch. Without this,
 // MergeFrom only includes changed fields within nested structs, and the
-// CRD validates the partial patch — rejecting it when required fields
-// (numReplicas, accelerator) are absent from the partial object.
+// CRD validates the partial patch — rejecting it when the required field
+// (accelerator) is absent from the partial object.
 // When desiredOptimizedAlloc hasn't been set yet (accelerator is empty),
 // the base is left unchanged so the zero-valued struct is not included.
 func fullDesiredAllocPatchBase(originalVA *llmdVariantAutoscalingV1alpha1.VariantAutoscaling, va *llmdVariantAutoscalingV1alpha1.VariantAutoscaling) *llmdVariantAutoscalingV1alpha1.VariantAutoscaling {

@@ -1,19 +1,19 @@
 # See the OWNERS docs: https://git.k8s.io/community/contributors/guide/owners.md
 
 # List of usernames who may use /lgtm
-approvers:
+reviewers:
   - pierDipi
-  - asm582
+  - shuynh2017
   - Gregory-Pereira
   - zdtsw
-  - aleskandro
-  - lburgazzoli
+  - vivekk16
+  - anishasthana
 
 # List of usernames who may use /approve
 approvers:
   - pierDipi
-  - asm582
+  - shuynh2017
   - Gregory-Pereira
   - zdtsw
-  - aleskandro
-  - lburgazzoli
+  - vivekk16
+  - anishasthana
