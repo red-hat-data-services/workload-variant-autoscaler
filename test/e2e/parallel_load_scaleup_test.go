@@ -236,7 +236,10 @@ var _ = Describe("Parallel Load Scale-Up Test", Label("full"), Ordered, func() {
 				Name:      vaName,
 			}, currentVA)
 			g.Expect(err).NotTo(HaveOccurred())
-			optimized := int32(currentVA.Status.DesiredOptimizedAlloc.NumReplicas)
+			var optimized int32
+			if currentVA.Status.DesiredOptimizedAlloc.NumReplicas != nil {
+				optimized = *currentVA.Status.DesiredOptimizedAlloc.NumReplicas
+			}
 			GinkgoWriter.Printf("Waiting for VA to be ready: optimized=%d, minReplicas=%d\n", optimized, hpaMinReplicas)
 			// Wait for optimized >= minReplicas (allows for initial 0 during engine startup)
 			g.Expect(optimized).To(BeNumerically(">=", hpaMinReplicas), "VA should have optimized >= minReplicas")
@@ -264,7 +267,9 @@ var _ = Describe("Parallel Load Scale-Up Test", Label("full"), Ordered, func() {
 			Name:      vaName,
 		}, va)
 		Expect(err).NotTo(HaveOccurred())
-		initialOptimized = int32(va.Status.DesiredOptimizedAlloc.NumReplicas)
+		if va.Status.DesiredOptimizedAlloc.NumReplicas != nil {
+			initialOptimized = *va.Status.DesiredOptimizedAlloc.NumReplicas
+		}
 		GinkgoWriter.Printf("Initial optimized replicas (after stabilization): %d\n", initialOptimized)
 	})
 
@@ -345,9 +350,15 @@ var _ = Describe("Parallel Load Scale-Up Test", Label("full"), Ordered, func() {
 	It("should detect increased load and trigger scale-up", func() {
 		By("Waiting for load generation to ramp up (30 seconds)")
 		time.Sleep(30 * time.Second)
+		GinkgoWriter.Println("Load ramp-up complete, monitoring VA for scale-up (up to 5m)")
 
 		By("Monitoring VariantAutoscaling for scale-up")
+		start := time.Now()
+		attempt := 0
 		Eventually(func(g Gomega) {
+			attempt++
+			elapsed := time.Since(start)
+
 			va := &variantautoscalingv1alpha1.VariantAutoscaling{}
 			err := crClient.Get(ctx, client.ObjectKey{
 				Namespace: cfg.LLMDNamespace,
@@ -355,10 +366,12 @@ var _ = Describe("Parallel Load Scale-Up Test", Label("full"), Ordered, func() {
 			}, va)
 			g.Expect(err).NotTo(HaveOccurred(), "Should be able to get VariantAutoscaling")
 
-			scaledOptimized = int32(va.Status.DesiredOptimizedAlloc.NumReplicas)
+			if va.Status.DesiredOptimizedAlloc.NumReplicas != nil {
+				scaledOptimized = *va.Status.DesiredOptimizedAlloc.NumReplicas
+			}
 
-			GinkgoWriter.Printf("VA optimized replicas: %d (initial: %d, minReplicas: %d)\n",
-				scaledOptimized, initialOptimized, hpaMinReplicas)
+			GinkgoWriter.Printf("VA check #%d (%v elapsed): optimized=%d (initial=%d, minReplicas=%d)\n",
+				attempt, elapsed.Round(time.Second), scaledOptimized, initialOptimized, hpaMinReplicas)
 
 			if !lowLoad {
 				// Scale-up means we should have MORE replicas than our initial stabilized state

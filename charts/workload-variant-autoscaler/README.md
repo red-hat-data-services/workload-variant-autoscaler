@@ -71,7 +71,7 @@ helm upgrade -i workload-variant-autoscaler ./workload-variant-autoscaler \
 After a WVA controller has been installed,
 you can add one or more models running in LLMD namespaces as scale targets to the WVA controller. As an example, the following command adds model name `my-model-a` with model ID `meta-llama/Llama-3.1-8` running in `team-a` LLMD namespace. This command creates the corresponding VA, HPA resources in `team-a` namespace.
 ```
-helm install -i wva-model-a ./workload-variant-autoscaler \
+helm install wva-model-a ./workload-variant-autoscaler \
   -n $WVA_NS \
   --set controller.enabled=false \
   --set va.enabled=true \
@@ -82,7 +82,7 @@ helm install -i wva-model-a ./workload-variant-autoscaler \
 ```
 Here is an example to add another model to the same WVA controller:
 ```
-helm install -i wva-model-b ./workload-variant-autoscaler \
+helm install wva-model-b ./workload-variant-autoscaler \
   -n $WVA_NS \
   --set controller.enabled=false \
   --set va.enabled=true \
@@ -91,7 +91,15 @@ helm install -i wva-model-b ./workload-variant-autoscaler \
   --set llmd.modelName=my-model-b \
   --set llmd.modelID="Qwen/Qwen3-0.6B"
 ```
-
+**Notes**:
+- When there are multiple WVA controllers installed in different namespaces, there's the possibility of adding models in a LLMD namespace as scale targets using the **same** `release name`. If `helm install` was used to add then there will be a clear message such as:
+  ```
+  INSTALLATION FAILED: cannot re-use a name that is still in use
+  ``` 
+  However, if `helm upgrade -i` (combine upgrade and install) was used then the message is less clear as shown below. In this case, different release names should be used:
+  ```
+  Error: UPGRADE FAILED: Unable to continue with update: Service "workload-variant-autoscaler-vllm" in namespace "xyz" exists and cannot be imported into the current release: invalid ownership metadata; annotation validation error: key "meta.helm.sh/release-namespace" must equal "abc": current value is "xyz"
+  ```
 
 ## Values
 
@@ -206,7 +214,8 @@ hpa:
           value: 10
           periodSeconds: 150
 ```
-
+You may want to set `scaleUp.stabilizationWindowSeconds` to a **low** number to trigger quicker scale-up, especially for models with long startup times. Similarly, set `scaleDown.stabilizationWindowSeconds` to a **high** number to slow down scale-down (reducing capacity), since once scaled down, it takes longer to restore capacity for slow-starting models. Another setting also affects scale-down is pod termination grace period as described here https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination.
+  
 **Configuration via Helm:**
 ```bash
 # Production: Conservative scaling (240s stabilization)
