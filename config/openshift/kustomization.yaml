@@ -7,6 +7,13 @@ resources:
 - metrics-reader-token.yaml
 - prometheus-metrics-reader-binding.yaml
 
+configMapGenerator:
+- envs:
+  - params.env
+  name: wva-parameters
+generatorOptions:
+  disableNameSuffixHash: true
+
 patches:
 - path: configmap-patch.yaml
   target:
@@ -28,5 +35,18 @@ patches:
   target:
     kind: ServiceMonitor
     name: controller-manager-metrics-monitor
+
+replacements:
+- source:
+    kind: ConfigMap
+    version: v1
+    name: wva-parameters
+    fieldPath: data.wva-controller-image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].image
 
 namespace: workload-variant-autoscaler-system
