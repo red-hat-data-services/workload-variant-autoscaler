@@ -72,7 +72,8 @@ export DEPLOY_PROMETHEUS=true         # Deploy Prometheus stack
 export DEPLOY_WVA=true                # Deploy WVA controller
 export DEPLOY_LLM_D=true              # Deploy llm-d infrastructure (emulated)
 export DEPLOY_PROMETHEUS_ADAPTER=true # Deploy Prometheus Adapter
-export DEPLOY_HPA=true                # Deploy HPA
+export DEPLOY_VA=true                 # Opt in: chart VariantAutoscaling (default in script: false)
+export DEPLOY_HPA=true                # Opt in: chart HPA (default in script: false)
 ```
 
 ### Step-by-Step Setup
@@ -97,6 +98,7 @@ export DEPLOY_LLM_D=false
 export DEPLOY_PROMETHEUS=true # Prometheus is needed for WVA to scrape metrics
 export VLLM_SVC_ENABLED=true
 export DEPLOY_PROMETHEUS_ADAPTER=false
+export DEPLOY_VA=false
 export DEPLOY_HPA=false
 make deploy-wva-emulated-on-kind
 ```
@@ -110,6 +112,8 @@ make deploy-wva-emulated-on-kind
 **4. Testing configuration with fast saturation:**
 
 ```bash
+export DEPLOY_VA=true
+export DEPLOY_HPA=true
 export VLLM_MAX_NUM_SEQS=8              # Low batch size for easy saturation
 export HPA_STABILIZATION_SECONDS=30     # Fast scaling for testing
 make deploy-wva-emulated-on-kind
@@ -192,20 +196,22 @@ kubectl port-forward -n llm-d-sim svc/infra-sim-inference-gateway 8000:80
 kubectl apply -f ../../config/samples/
 ```
 
-### 3. Generate Load
+### 3. Run E2E test
 
 **Option A — Run E2E tests (recommended)**  
-The e2e suite deploys infra, creates resources, generates load, and validates scaling. No manual load tool needed.
+The consolidated e2e suite (`test/e2e/`) exercises infra-only deploy, resource wiring, reconciliation, and deterministic correctness checks. For sustained load or benchmarking, use **Option B** or separate perf workflows — not required for e2e.
 
 ```bash
 # From repo root, after deploying (e.g. make deploy-wva-emulated-on-kind)
 make deploy-e2e-infra   # if not already done
 make test-e2e-smoke    # quick validation
 # or
-make test-e2e-full     # full suite including saturation scaling
+make test-e2e-full     # full suite (`full && !flaky`)
 ```
 
 See [Testing Guide](../../docs/developer-guide/testing.md) and [E2E Test Suite README](../../test/e2e/README.md).
+
+### 4. Generate Load
 
 **Option B — Manual load with burst script**  
 Use the script in the e2e fixtures (requires only `curl`; no Python). After port-forwarding the inference gateway or vLLM service to `localhost:8000`:
@@ -221,7 +227,7 @@ export BATCH_SIZE=10
 
 Tune load with `TOTAL_REQUESTS`, `BATCH_SIZE`, and optional `BATCH_SLEEP`, `MAX_TOKENS`, `CURL_TIMEOUT` (see script header).
 
-### 4. Monitor
+### 5. Monitor
 
 ```bash
 # Watch deployments scale

@@ -32,6 +32,22 @@ func WithMaxReplicas(max int32) VAOption {
 	}
 }
 
+// WithScaleTargetKind sets the Kind and APIVersion fields on the ScaleTargetRef.
+func WithScaleTargetKind(kind string) VAOption {
+	return func(va *variantautoscalingv1alpha1.VariantAutoscaling) {
+		va.Spec.ScaleTargetRef.Kind = kind
+		// Set appropriate APIVersion based on kind
+		switch kind {
+		case "LeaderWorkerSet":
+			va.Spec.ScaleTargetRef.APIVersion = "leaderworkerset.x-k8s.io/v1"
+		case "Deployment":
+			va.Spec.ScaleTargetRef.APIVersion = "apps/v1"
+		default:
+			// Keep existing APIVersion for unknown kinds
+		}
+	}
+}
+
 // CreateVariantAutoscaling creates a VariantAutoscaling resource. Fails if it already exists.
 func CreateVariantAutoscaling(
 	ctx context.Context,
@@ -73,17 +89,8 @@ func EnsureVariantAutoscaling(
 		if deleteErr != nil && !errors.IsNotFound(deleteErr) {
 			return fmt.Errorf("delete existing VA %s: %w", name, deleteErr)
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, 1*time.Minute)
-		defer cancel()
-		for {
-			checkErr := crClient.Get(waitCtx, client.ObjectKey{Namespace: namespace, Name: name}, existingVA)
-			if errors.IsNotFound(checkErr) {
-				break
-			}
-			if waitCtx.Err() != nil {
-				return fmt.Errorf("timeout waiting for VA %s to be deleted", name)
-			}
-			time.Sleep(2 * time.Second)
+		if err := WaitUntilVariantAutoscalingDeleted(ctx, crClient, namespace, name, 1*time.Minute); err != nil {
+			return fmt.Errorf("timeout waiting for VA %s to be deleted: %w", name, err)
 		}
 	} else if !errors.IsNotFound(err) {
 		return fmt.Errorf("check existing VA %s: %w", name, err)

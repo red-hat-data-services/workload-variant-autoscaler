@@ -41,8 +41,6 @@ WVA_LOG_LEVEL="debug" # WVA log level set to debug for emulated environments
 LLM_D_INFERENCE_SIM_IMG_REPO=${LLM_D_INFERENCE_SIM_IMG_REPO:-"ghcr.io/llm-d/llm-d-inference-sim"}
 LLM_D_INFERENCE_SIM_IMG_TAG=${LLM_D_INFERENCE_SIM_IMG_TAG:-"latest"}
 
-# Load generator image (guidellm) - pre-loaded into Kind for faster e2e test startup
-GUIDELLM_IMG=${GUIDELLM_IMG:-"ghcr.io/vllm-project/guidellm:latest"}
 LLM_D_MODELSERVICE_NAME="ms-$NAMESPACE_SUFFIX-llm-d-modelservice"
 LLM_D_MODELSERVICE_VALUES="ms-$NAMESPACE_SUFFIX/values.yaml"
 LLM_D_EPP_NAME="gaie-$NAMESPACE_SUFFIX-epp"
@@ -92,7 +90,7 @@ check_specific_prerequisites() {
     
     # Check for required tools (including Kubernetes-specific ones)
     for tool in "${REQUIRED_TOOLS[@]}"; do
-        if ! command -v $tool &> /dev/null; then
+        if ! command -v "$tool" &> /dev/null; then
             missing_tools+=($tool)
         fi
     done
@@ -129,9 +127,6 @@ check_specific_prerequisites() {
 
     # Load WVA image into KIND cluster
     load_image
-
-    # Pre-load guidellm image so e2e load jobs don't need to pull at runtime
-    preload_e2e_images
 
     log_success "All Kind emulated deployment prerequisites met"
 }
@@ -206,137 +201,28 @@ load_image() {
     
     # Load the image into the KIND cluster
     kind load docker-image "$WVA_IMAGE_REPO:$WVA_IMAGE_TAG" --name "$CLUSTER_NAME"
-    
     log_success "Image '$WVA_IMAGE_REPO:$WVA_IMAGE_TAG' loaded into KIND cluster '$CLUSTER_NAME'"
 }
 
-# Pre-loads e2e test images (guidellm load generator) into the Kind cluster
-# so that load generation jobs start quickly without runtime image pulls.
-preload_e2e_images() {
-    if [ "${PRELOAD_E2E_IMAGES:-true}" = "false" ]; then
-        log_info "Skipping e2e image pre-loading (PRELOAD_E2E_IMAGES=false)"
-        return
-    fi
+KUBE_LIKE_VALUES_DEV_IF_PRESENT=true
 
-    log_info "Pre-loading e2e test images into Kind cluster..."
-
-    local platform="${KIND_IMAGE_PLATFORM:-}"
-    if [ -z "$platform" ]; then
-        case "$(uname -m)" in
-            aarch64|arm64) platform="linux/arm64" ;;
-            *) platform="linux/amd64" ;;
-        esac
-    fi
-
-    # Pre-load guidellm image (used by CreateLoadJob in e2e tests)
-    if docker image inspect "$GUIDELLM_IMG" >/dev/null 2>&1; then
-        log_info "guidellm image already exists locally, loading into Kind..."
-    else
-        log_info "Pulling guidellm image '$GUIDELLM_IMG' (platform=$platform)..."
-        if ! docker pull --platform "$platform" "$GUIDELLM_IMG"; then
-            log_warning "Failed to pull guidellm image - e2e load jobs will pull at runtime (slower)"
-            return
-        fi
-    fi
-
-    if kind load docker-image "$GUIDELLM_IMG" --name "$CLUSTER_NAME"; then
-        log_success "guidellm image loaded into Kind cluster"
-    else
-        log_warning "Failed to load guidellm image into Kind - e2e load jobs will pull at runtime"
-    fi
-}
-
-#### REQUIRED FUNCTION used by deploy/install.sh ####
-create_namespaces() {
-    log_info "Creating namespaces..."
-    
-    for ns in $WVA_NS $MONITORING_NAMESPACE $LLMD_NS; do
-        if kubectl get namespace $ns &> /dev/null; then
-            log_warning "Namespace $ns already exists"
-        else
-            kubectl create namespace $ns
-            log_success "Namespace $ns created"
-        fi
-    done
-}
-
-#### REQUIRED FUNCTION used by deploy/install.sh ####
-# Deploy Prometheus stack with TLS for Kubernetes
-deploy_prometheus_stack() {
-    log_info "Deploying kube-prometheus-stack with TLS..."
-    
-    # Add helm repo
-    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-    helm repo update
-    
-    # Create self-signed TLS certificate for Prometheus
-    log_info "Creating self-signed TLS certificate for Prometheus"
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout /tmp/prometheus-tls.key \
-        -out /tmp/prometheus-tls.crt \
-        -days 365 \
-        -subj "/CN=prometheus" \
-        -addext "subjectAltName=DNS:kube-prometheus-stack-prometheus.${MONITORING_NAMESPACE}.svc.cluster.local,DNS:kube-prometheus-stack-prometheus.${MONITORING_NAMESPACE}.svc,DNS:prometheus,DNS:localhost" \
-        &> /dev/null
-    
-    # Create Kubernetes secret with TLS certificate
-    log_info "Creating Kubernetes secret for Prometheus TLS"
-    kubectl create secret tls $PROMETHEUS_SECRET_NAME \
-        --cert=/tmp/prometheus-tls.crt \
-        --key=/tmp/prometheus-tls.key \
-        -n $MONITORING_NAMESPACE \
-        --dry-run=client -o yaml | kubectl apply -f - &> /dev/null
-    
-    # Clean up temp files
-    rm -f /tmp/prometheus-tls.{key,crt}
-    
-    # Install kube-prometheus-stack with TLS enabled
-    # Disable Grafana and Alertmanager — WVA only needs Prometheus for metrics collection.
-    # Use a 10m timeout — 5m is insufficient on busy clusters (e.g. CKS with preemption).
-    log_info "Installing kube-prometheus-stack with TLS configuration"
-    helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-        -n $MONITORING_NAMESPACE \
-        --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-        --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-        --set prometheus.service.type=ClusterIP \
-        --set prometheus.service.port=$PROMETHEUS_PORT \
-        --set prometheus.prometheusSpec.web.tlsConfig.cert.secret.name=$PROMETHEUS_SECRET_NAME \
-        --set prometheus.prometheusSpec.web.tlsConfig.cert.secret.key=tls.crt \
-        --set prometheus.prometheusSpec.web.tlsConfig.keySecret.name=$PROMETHEUS_SECRET_NAME \
-        --set prometheus.prometheusSpec.web.tlsConfig.keySecret.key=tls.key \
-        --set grafana.enabled=false \
-        --set alertmanager.enabled=false \
-        --timeout=10m \
-        --wait
-    
-    log_success "kube-prometheus-stack deployed with TLS"
-    log_info "Prometheus URL: $PROMETHEUS_URL"
-}
-
-# REQUIRED FUNCTION - only for emulated environments ####
-# Deploy WVA prerequisites for Kubernetes
-deploy_wva_prerequisites() {
-    log_info "Deploying Workload-Variant-Autoscaler prerequisites for Kubernetes..."
-
-    # Extract Prometheus CA certificate
-    log_info "Extracting Prometheus TLS certificate"
-    kubectl get secret $PROMETHEUS_SECRET_NAME -n $MONITORING_NAMESPACE -o jsonpath='{.data.tls\.crt}' | base64 -d > $PROM_CA_CERT_PATH
-
-    if [ "$SKIP_TLS_VERIFY" = true ] ||  [ -f "$WVA_PROJECT/charts/workload-variant-autoscaler/values-dev.yaml" ]; then
-        log_warning "TLS verification NOT enabled: using values-dev.yaml for dev deployments"
-        VALUES_FILE="${WVA_PROJECT}/charts/workload-variant-autoscaler/values-dev.yaml"
-    else
-        log_info "TLS verification enabled: using values.yaml for production deployments"
-        VALUES_FILE="${WVA_PROJECT}/charts/workload-variant-autoscaler/values.yaml"
-    fi
-
-    log_success "WVA prerequisites complete"
-}
+_wva_deploy_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib"
+# shellcheck source=deploy_prometheus_kube_stack.sh
+source "${_wva_deploy_lib}/deploy_prometheus_kube_stack.sh"
+# shellcheck source=kube_like_adapter.sh
+source "${_wva_deploy_lib}/kube_like_adapter.sh"
 
 # REQUIRED FUNCTION - only for emulated environments ####
 # Apply llm-d infrastructure fixes for Kind emulated clusters - e.g., remove prefill deployments, remove decode deployments if tests are enabled
 apply_llm_d_infrastructure_fixes() {
     log_info "Applying llm-d infrastructure fixes for KIND emulator..."
+    # Skip cleanup when modelservice release is not installed (e.g., e2e infra-only
+    # path now excludes it via helmfile selector).
+    if ! helm list -n "$LLMD_NS" --short 2>/dev/null | grep -q '^ms-'; then
+        log_info "No llm-d modelservice release detected in $LLMD_NS; skipping prefill/decode cleanup"
+        return
+    fi
+
     # Delete prefill deployment
     # TODO: remove once WVA supports both prefill and decode
     log_info "Deleting prefill deployments..."
@@ -352,36 +238,9 @@ apply_llm_d_infrastructure_fixes() {
     fi
 }
 
-# Kubernetes-specific Undeployment functions
-undeploy_prometheus_stack() {
-    log_info "Uninstalling kube-prometheus-stack..."
-    
-    helm uninstall kube-prometheus-stack -n $MONITORING_NAMESPACE 2>/dev/null || \
-        log_warning "Prometheus stack not found or already uninstalled"
-
-    kubectl delete secret $PROMETHEUS_SECRET_NAME -n $MONITORING_NAMESPACE --ignore-not-found
-
-    log_success "Prometheus stack uninstalled"
-}
-
 #### REQUIRED FUNCTION used by deploy/install.sh ####
 delete_namespaces() {
-    log_info "Deleting namespaces..."
-    
-    for ns in $LLMD_NS $WVA_NS $MONITORING_NAMESPACE; do
-        if kubectl get namespace $ns &> /dev/null; then
-            if [[ "$ns" == "$LLMD_NS" && "$DEPLOY_LLM_D" == "false" ]] || [[ "$ns" == "$WVA_NS" && "$DEPLOY_WVA" == "false" ]] || [[ "$ns" == "$MONITORING_NAMESPACE" && "$DEPLOY_PROMETHEUS" == "false" ]] ; then
-                log_info "Skipping deletion of namespace $ns as it was not deployed"
-            else 
-                log_info "Deleting namespace $ns..."
-                kubectl delete namespace $ns 2>/dev/null || \
-                    log_warning "Failed to delete namespace $ns"
-            fi
-        fi
-    done
-    
-    log_success "Namespaces deleted"
-
+    delete_namespaces_kube_like
     if [ "$DELETE_CLUSTER" = true ]; then
         delete_kind_cluster
     fi
