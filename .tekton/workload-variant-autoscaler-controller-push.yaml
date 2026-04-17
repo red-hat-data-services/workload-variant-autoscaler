@@ -2,7 +2,7 @@ apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
   annotations:
-    build.appstudio.openshift.io/repo: https://github.com/opendatahub-io/workload-variant-autoscaler?rev={{revision}}
+    build.appstudio.openshift.io/repo: https://github.com/red-hat-data-services/workload-variant-autoscaler?rev={{revision}}
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
@@ -23,22 +23,22 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/opendatahub/workload-variant-autoscaler:odh-stable
+    value: quay.io/rhoai/workload-variant-autoscaler:odh-stable
   - name: dockerfile
-    value: Dockerfile
+    value: Dockerfile.konflux
   - name: path-context
     value: .
   pipelineRef:
     resolver: git
     params:
     - name: url
-      value: https://github.com/opendatahub-io/odh-konflux-central.git
+      value: https://github.com/red-hat-data-services/konflux-central.git
     - name: revision
       value: main
     - name: pathInRepo
-      value: pipeline/multi-arch-container-build.yaml
+      value: pipelines/multi-arch-container-build.yaml
   taskRunTemplate:
-    serviceAccountName: build-pipeline-workload-variant-autoscaler
+    serviceAccountName: build-pipeline-pull-request-pipelines
   workspaces:
   - name: git-auth
     secret:
