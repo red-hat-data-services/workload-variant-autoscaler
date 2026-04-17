@@ -38,12 +38,7 @@ spec:
   - name: hermetic
     value: true
   - name: prefetch-input
-    value: |
-      {
-        "type": "gomod"
-      }
-  - name: build-source-image
-    value: true
+    value: '{"type": "gomod", "path": "."}'
   - name: build-image-index
     value: true
   - name: build-platforms
