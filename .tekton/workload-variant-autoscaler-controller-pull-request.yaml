@@ -6,7 +6,6 @@ metadata:
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     build.appstudio.redhat.com/pull_request_number: "{{pull_request_number}}"
-
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-comment: "^/build-konflux"
     pipelinesascode.tekton.dev/on-label: "[kfbuild-all, kfbuild-wva-controller]"
@@ -15,11 +14,13 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
   labels:
     appstudio.openshift.io/application: automation
-    appstudio.openshift.io/component: pull-request-pipelines-odh-workload-variant-autoscaler
+    appstudio.openshift.io/component: pull-request-pipelines-odh-workload-variant-autoscaler-controller
     pipelines.appstudio.openshift.io/type: build
-  name: odh-workload-variant-autoscaler-controller-on-pull-request
+  name: odh-workload-variant-autoscaler-controller-on-pull-request-83472
   namespace: rhoai-tenant
 spec:
+  timeouts:
+    pipeline: 8h
   params:
   - name: git-url
     value: '{{source_url}}'
@@ -33,12 +34,13 @@ spec:
     - version=on-pr-{{revision}}
     - io.openshift.tags=odh-workload-variant-autoscaler-controller
   - name: output-image
-    value: quay.io/rhoai/pull-request-pipelines:odh-workload-variant-autoscaler-controller-rhel9-{{revision}}
+    value: quay.io/rhoai/pull-request-pipelines:odh-workload-variant-autoscaler-controller-{{revision}}
   - name: build-platforms
     value:
     - linux/x86_64
     - linux-m2xlarge/arm64
-    # Extend me later
+  - name: image-expires-after
+    value: 5d
   - name: dockerfile
     value: Dockerfile.konflux
   - name: path-context
@@ -46,7 +48,8 @@ spec:
   - name: hermetic
     value: true
   - name: prefetch-input
-    value: '{"type": "gomod", "path": "."}'
+    value: |
+      {"type": "gomod", "path": "."}
   - name: build-image-index
     value: true
   - name: image-expires-after
