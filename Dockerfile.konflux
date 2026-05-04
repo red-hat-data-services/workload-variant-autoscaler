@@ -7,8 +7,7 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG APP_BUILD_ROOT
 
-## strictfipsruntime does not work with disabling CGO, which is a best practice in this case
-# ENV GOEXPERIMENT=strictfipsruntime
+ENV GOEXPERIMENT=strictfipsruntime
 ENV APP_ROOT=$APP_BUILD_ROOT
 ENV GOPATH=$APP_ROOT
 
@@ -20,7 +19,7 @@ COPY api/ api/
 COPY internal/ internal/
 COPY pkg/ pkg/
 RUN go mod download && \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ${APP_ROOT}/manager cmd/main.go
+    CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} GOEXPERIMENT=${GOEXPERIMENT} go build -a -o ${APP_ROOT}/manager cmd/main.go
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:8d0a8fb39ec907e8ca62cdd24b62a63ca49a30fe465798a360741fde58437a23 AS deploy
 
