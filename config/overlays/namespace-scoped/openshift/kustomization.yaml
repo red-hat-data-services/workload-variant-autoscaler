@@ -10,6 +10,7 @@ resources:
 # OpenShift's user-workload-monitoring Prometheus needs cluster-monitoring-view
 # permissions to scrape the controller's secure /metrics endpoint.
 - prometheus-adapter-monitoring.yaml
+- metrics-reader-token.yaml
 
 components:
 - ../../../components/namespace-scoped/
@@ -38,3 +39,18 @@ patches:
   target:
     kind: ClusterRoleBinding
     name: prometheus-metrics-auth-rolebinding
+- path: monitor-auth-patch.yaml
+  target:
+    kind: ServiceMonitor
+    name: controller-manager-metrics-monitor
+# ODH/RHDS: skip operator reconcile of the saturation ConfigMap.
+- patch: |-
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: saturation-scaling-config
+      annotations:
+        opendatahub.io/managed: "false"
+  target:
+    kind: ConfigMap
+    name: saturation-scaling-config
