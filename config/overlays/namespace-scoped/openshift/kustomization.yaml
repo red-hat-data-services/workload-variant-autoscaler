@@ -11,6 +11,9 @@ resources:
 # permissions to scrape the controller's secure /metrics endpoint.
 - prometheus-adapter-monitoring.yaml
 - metrics-reader-token.yaml
+# Allow ingress to the WVA controller pods in namespaces with restrictive
+# default-deny NetworkPolicies (e.g. redhat-ods-applications).
+- allow-metrics-traffic.yaml
 
 components:
 - ../../../components/namespace-scoped/
