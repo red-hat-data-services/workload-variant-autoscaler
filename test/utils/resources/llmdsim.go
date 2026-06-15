@@ -13,6 +13,8 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+const SimulatorImage = "ghcr.io/llm-d/llm-d-inference-sim:v0.9.0"
+
 // creates a llm-d-sim deployment with the specified configuration
 func CreateLlmdSimDeployment(namespace, deployName, modelName, appLabel, port string, avgTTFT, avgITL int, replicas int32) *appsv1.Deployment {
 	return &appsv1.Deployment{
@@ -41,20 +43,19 @@ func CreateLlmdSimDeployment(namespace, deployName, modelName, appLabel, port st
 					Containers: []corev1.Container{
 						{
 							Name:            appLabel,
-							Image:           "ghcr.io/llm-d/llm-d-inference-sim:v0.7.1",
+							Image:           SimulatorImage,
 							ImagePullPolicy: corev1.PullAlways,
 							Args: []string{
 								"--model",
 								modelName,
 								"--port",
 								port,
-								fmt.Sprintf("--time-to-first-token=%d", avgTTFT),
-								fmt.Sprintf("--inter-token-latency=%d", avgITL),
+								fmt.Sprintf("--time-to-first-token=%dms", avgTTFT),
+								fmt.Sprintf("--inter-token-latency=%dms", avgITL),
 								"--mode=random",
 								"--enable-kvcache",
 								"--kv-cache-size=1024",
 								"--block-size=16",
-								"--tokenizers-cache-dir=/tmp",
 							},
 							Env: []corev1.EnvVar{
 								{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
@@ -100,20 +101,19 @@ func CreateLlmdSimDeploymentWithGPU(namespace, deployName, modelName, appLabel, 
 
 	container := corev1.Container{
 		Name:            appLabel,
-		Image:           "ghcr.io/llm-d/llm-d-inference-sim:v0.7.1",
+		Image:           SimulatorImage,
 		ImagePullPolicy: corev1.PullAlways,
 		Args: []string{
 			"--model",
 			modelName,
 			"--port",
 			port,
-			fmt.Sprintf("--time-to-first-token=%d", avgTTFT),
-			fmt.Sprintf("--inter-token-latency=%d", avgITL),
+			fmt.Sprintf("--time-to-first-token=%dms", avgTTFT),
+			fmt.Sprintf("--inter-token-latency=%dms", avgITL),
 			"--mode=random",
 			"--enable-kvcache",
 			"--kv-cache-size=1024",
 			"--block-size=16",
-			"--tokenizers-cache-dir=/tmp",
 		},
 		Env: []corev1.EnvVar{
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
@@ -297,6 +297,16 @@ func CreateLlmdSimServiceMonitor(name, namespace, targetNamespace, appLabel stri
 					Port:     "http",
 					Path:     "/metrics",
 					Interval: promoperator.Duration("15s"),
+					// Propagate the llm-d.ai/variant pod label into scraped metrics.
+					// __meta_* labels are only available during target relabeling, so this
+					// must live under RelabelConfigs (not MetricRelabelConfigs).
+					RelabelConfigs: []promoperator.RelabelConfig{
+						{
+							SourceLabels: []promoperator.LabelName{"__meta_kubernetes_pod_label_llm_d_ai_variant"},
+							TargetLabel:  "llm_d_ai_variant",
+							Action:       "replace",
+						},
+					},
 				},
 			},
 			NamespaceSelector: promoperator.NamespaceSelector{
