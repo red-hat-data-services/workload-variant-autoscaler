@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +36,7 @@ import (
 	llmdVariantAutoscalingV1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
 	actuator "github.com/llm-d/llm-d-workload-variant-autoscaler/internal/actuator"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/locator"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/registration"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/source"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
@@ -144,7 +146,8 @@ type Engine struct {
 
 	// saturationV2Analyzer is the V2 token-based saturation analyzer (initialized once).
 	// Also pre-registered in analyzers under interfaces.SaturationAnalyzerName.
-	saturationV2Analyzer *saturation_v2.SaturationAnalyzer
+	// Typed as interfaces.Analyzer to allow injection in tests.
+	saturationV2Analyzer interfaces.Analyzer
 
 	// queueingModelAnalyzer is the queueing model-based analyzer (initialized once).
 	// Selected via analyzerName: "queueing-model" in SaturationScalingConfig.
@@ -188,7 +191,7 @@ type Engine struct {
 // NewEngine creates a new instance of the saturation engine.
 // Config must be non-nil (validated in main.go before engine creation).
 // Panics if cfg is nil to fail fast on programming errors.
-func NewEngine(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, metricsRegistry *source.SourceRegistry, cfg *config.Config) *Engine {
+func NewEngine(client client.Client, apiReader client.Reader, scheme *runtime.Scheme, recorder record.EventRecorder, metricsRegistry *source.SourceRegistry, cfg *config.Config) *Engine {
 	if cfg == nil {
 		panic("config is nil in NewEngine - this should not happen (validated in main.go before engine creation)")
 	}
@@ -213,12 +216,19 @@ func NewEngine(client client.Client, scheme *runtime.Scheme, recorder record.Eve
 	// from ConfigMap), since config arrives after engine init.
 	var scalingOptimizer pipeline.ScalingOptimizer = pipeline.NewCostAwareOptimizer()
 
+	podLocator, err := locator.New(client, apiReader)
+	if err != nil {
+		// locator.New only fails when defaultCacheSize <= 0, which is a
+		// programming error we cannot recover from at runtime.
+		panic(fmt.Sprintf("locator.New: %v", err))
+	}
+
 	engine := Engine{
 		client:                  client,
 		scheme:                  scheme,
 		Recorder:                recorder,
 		Config:                  cfg,
-		ReplicaMetricsCollector: collector.NewReplicaMetricsCollector(promSource, client, recorder),
+		ReplicaMetricsCollector: collector.NewReplicaMetricsCollector(promSource, client, recorder, podLocator),
 		ScaleToZeroEnforcer:     pipeline.NewEnforcer(requestCountFunc),
 		GPULimiter:              gpuLimiter,
 		metricsRegistry:         metricsRegistry,
@@ -1579,6 +1589,13 @@ func (e *Engine) applySaturationDecisions(
 		}
 
 		if hasDecision {
+			if decision.Action != interfaces.ActionNoChange {
+				// Sanitize reason to prevent Prometheus cardinality explosion from dynamic numeric values
+				sanitizedReason := sanitizeReasonForMetrics(reason, decision.Action)
+				if err := e.metricsEmitter.EmitReplicaScalingMetrics(ctx, &updateVa, string(decision.Action), sanitizedReason); err != nil {
+					logger.Error(err, "Failed to emit replica scaling metrics")
+				}
+			}
 			logger.Info("Applied saturation decision via shared cache",
 				"variant", vaName,
 				"namespace", updateVa.Namespace,
@@ -1586,6 +1603,58 @@ func (e *Engine) applySaturationDecisions(
 				"target", targetReplicas,
 				"reason", reason)
 		}
+	}
+}
+
+// sanitizeReasonForMetrics converts detailed reason strings into bounded categorical
+// values safe for use as Prometheus label values. This prevents cardinality explosion
+// from dynamic numeric values embedded in reason strings.
+// TODO: look fragile, refactor this function for better solution
+func sanitizeReasonForMetrics(reason string, action interfaces.SaturationAction) string {
+	// Check for saturation-only mode patterns
+	if strings.Contains(reason, "saturation-only mode:") {
+		switch action {
+		case interfaces.ActionScaleUp:
+			return "saturation-only mode: scale-up"
+		case interfaces.ActionScaleDown:
+			return "saturation-only mode: scale-down"
+		default:
+			return "saturation-only mode: no-change"
+		}
+	}
+
+	// Check for scale-from-zero pattern
+	if strings.Contains(reason, "scalefromzero") {
+		switch action {
+		case interfaces.ActionScaleUp:
+			return "scalefromzero: scale-up"
+		case interfaces.ActionScaleDown:
+			return "scalefromzero: scale-down"
+		default:
+			return "scalefromzero: no-change"
+		}
+	}
+
+	// Check for V2 optimizer patterns (cost-aware, greedy-by-score, enforced)
+	if strings.Contains(reason, "V2") {
+		switch action {
+		case interfaces.ActionScaleUp:
+			return "V2 scale-up"
+		case interfaces.ActionScaleDown:
+			return "V2 scale-down"
+		default:
+			return "V2 no-change"
+		}
+	}
+
+	// Default fallback based on action
+	switch action {
+	case interfaces.ActionScaleUp:
+		return "scale-up"
+	case interfaces.ActionScaleDown:
+		return "scale-down"
+	default:
+		return "no-change"
 	}
 }
 

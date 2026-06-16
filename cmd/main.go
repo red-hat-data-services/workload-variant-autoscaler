@@ -49,12 +49,14 @@ import (
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	llmdVariantAutoscalingV1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/locator"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/source"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/source/prometheus"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/config"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/controller"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/controller/indexers"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/coordinator"
+	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/coordinator/plugins/gpurebalance"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/datastore"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/saturation"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/engines/scalefromzero"
@@ -185,6 +187,9 @@ func main() {
 	} else {
 		setupLog.Info("KEDA ScaledObject CRD not found - annotation-based discovery limited to HPAs")
 	}
+	// Gate the pod locator's ScaledObject lookups on KEDA availability. Set before
+	// the saturation engine goroutine constructs its locator.
+	locator.SetKEDAEnabled(kedaEnabled)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -358,7 +363,7 @@ func main() {
 
 	// Setup custom indexes for lookups on VariantAutoscalings
 	setupLog.Info("Setting up indexes")
-	if err := indexers.SetupIndexes(context.Background(), mgr); err != nil {
+	if err := indexers.SetupIndexes(context.Background(), mgr, kedaEnabled); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
 		os.Exit(1)
 	}
@@ -449,6 +454,7 @@ func main() {
 
 		engine := saturation.NewEngine(
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			mgr.GetScheme(),
 			mgr.GetEventRecorderFor("workload-variant-autoscaler-saturation-engine"),
 			sourceRegistry,
@@ -540,9 +546,16 @@ func main() {
 
 	// Coordinator: cluster-wide leader-elected loop that dispatches a
 	// selected set of HPAs and ScaledObjects to registered plugins.
-	// Off by default; opt in via coordinator.enabled in the unified config.
+	// EXPERIMENTAL: off by default; opt in by setting EXPERIMENTAL_COORDINATOR_ENABLED: "true"
+	// in the manager ConfigMap.
 	if cfg.CoordinatorEnabled() {
-		coord, err := coordinator.New(mgr.GetClient(), nil, coordinator.Options{
+		setupLog.Info("WARNING: Coordinator is an experimental feature. " +
+			"It may change or be removed in future releases. " +
+			"Do not use in production without understanding the risks.")
+		plugins := []coordinator.Plugin{
+			gpurebalance.New(mgr.GetClient(), promAPI),
+		}
+		coord, err := coordinator.New(mgr.GetClient(), plugins, coordinator.Options{
 			Interval:    cfg.CoordinatorInterval(),
 			KEDAEnabled: kedaEnabled,
 		})
@@ -559,7 +572,7 @@ func main() {
 			"kedaEnabled", kedaEnabled,
 		)
 	} else {
-		setupLog.Info("Coordinator disabled (set coordinator.enabled=true to enable)")
+		setupLog.Info("Coordinator disabled (experimental feature; set EXPERIMENTAL_COORDINATOR_ENABLED=true to enable)")
 	}
 
 	if metricsCertWatcher != nil {
