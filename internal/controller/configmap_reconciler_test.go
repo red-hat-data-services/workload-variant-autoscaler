@@ -38,6 +38,8 @@ import (
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/testutil"
 )
 
+const annotationValueTrue = "true"
+
 var _ = Describe("ConfigMapReconciler", func() {
 	var (
 		reconciler      *ConfigMapReconciler
@@ -295,7 +297,7 @@ var _ = Describe("ConfigMapReconciler", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "labeled-ns",
 					Labels: map[string]string{
-						constants.NamespaceConfigEnabledLabelKey: "true",
+						constants.NamespaceConfigEnabledLabelKey: annotationValueTrue,
 					},
 				},
 			}
@@ -312,7 +314,7 @@ var _ = Describe("ConfigMapReconciler", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "excluded-ns",
 					Annotations: map[string]string{
-						constants.NamespaceExcludeAnnotationKey: "true",
+						constants.NamespaceExcludeAnnotationKey: annotationValueTrue,
 					},
 				},
 			}
@@ -376,7 +378,7 @@ var _ = Describe("ConfigMapReconciler", func() {
 			if ns.Annotations == nil {
 				ns.Annotations = make(map[string]string)
 			}
-			ns.Annotations[constants.NamespaceExcludeAnnotationKey] = "true"
+			ns.Annotations[constants.NamespaceExcludeAnnotationKey] = annotationValueTrue
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			By("Checking if watched namespace is still watched despite exclusion")
@@ -404,7 +406,7 @@ var _ = Describe("ConfigMapReconciler", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "non-watched-excluded",
 					Annotations: map[string]string{
-						constants.NamespaceExcludeAnnotationKey: "true",
+						constants.NamespaceExcludeAnnotationKey: annotationValueTrue,
 					},
 				},
 			}
@@ -422,7 +424,7 @@ var _ = Describe("ConfigMapReconciler", func() {
 			if ns.Annotations == nil {
 				ns.Annotations = make(map[string]string)
 			}
-			ns.Annotations[constants.NamespaceExcludeAnnotationKey] = "true"
+			ns.Annotations[constants.NamespaceExcludeAnnotationKey] = annotationValueTrue
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			By("Creating namespace-local saturation ConfigMap in watched namespace")
@@ -482,6 +484,34 @@ var _ = Describe("ConfigMapReconciler", func() {
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}))
+		})
+
+		It("parses a V2 saturation entry end-to-end via parseSaturationConfig", func() {
+			By("Parsing ConfigMap data with a V2 analyzers entry and a per-analyzer threshold")
+			cmData := map[string]string{
+				"default": `analyzers:
+  - name: saturation
+    scaleUpThreshold: 0.90
+kvCacheThreshold: 0.80
+queueLengthThreshold: 5
+kvSpareTrigger: 0.1
+queueSpareTrigger: 3
+`,
+			}
+			configs, count := parseSaturationConfig(cmData, GinkgoLogr)
+
+			Expect(count).To(Equal(1))
+			Expect(configs).To(HaveKey("default"))
+			got := configs["default"]
+			Expect(got.IsV2()).To(BeTrue())
+			Expect(got.Analyzers).To(HaveLen(1))
+
+			// ApplyDefaults ran inside parseSaturationConfig: the global V2 default
+			// is filled while the per-analyzer override survives the parse path.
+			Expect(got.ScaleUpThreshold).To(Equal(config.DefaultScaleUpThreshold))   // 0.85
+			Expect(got.ScaleDownBoundary).To(Equal(config.DefaultScaleDownBoundary)) // 0.70
+			Expect(got.Analyzers[0].ScaleUpThreshold).NotTo(BeNil())
+			Expect(*got.Analyzers[0].ScaleUpThreshold).To(Equal(0.90))
 		})
 
 	})
