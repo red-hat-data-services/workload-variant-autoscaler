@@ -3,7 +3,7 @@ kind: Kustomization
 
 namespace: wva-system
 
-namePrefix: wva-
+namePrefix: workload-variant-autoscaler-
 
 resources:
 - ../../../base/
