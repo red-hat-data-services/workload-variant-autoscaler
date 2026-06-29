@@ -64,14 +64,10 @@ func (e *Engine) runV2AnalysisOnly(
 		return nil, fmt.Errorf("V2 saturation analysis failed: %w", err)
 	}
 
-	logger.Info("V2 saturation analysis completed",
-		"modelID", modelID,
-		"totalSupply", result.TotalSupply,
-		"totalDemand", result.TotalDemand,
-		"utilization", result.Utilization,
-		"requiredCapacity", result.RequiredCapacity,
-		"spareCapacity", result.SpareCapacity)
-
+	// Analysis results are logged by the caller (runAnalyzersAndScore) after the
+	// applyUniversalThreshold post-step, so the single Info line can include the
+	// real RequiredCapacity/SpareCapacity. They are left zero here, so logging
+	// them at this point would always report 0 and be misleading.
 	return result, nil
 }
 
@@ -128,11 +124,13 @@ func (e *Engine) runAnalyzersAndScore(
 	// Collect per-analyzer results. Saturation is first; each non-saturation
 	// analyzer is run, calibrated with its resolved thresholds, and appended.
 	namedResults := []pipeline.NamedAnalyzerResult{{
-		Name:      interfaces.SaturationAnalyzerName,
-		Result:    baseResult,
-		Score:     scoreForAnalyzer(interfaces.SaturationAnalyzerName, config),
-		Remaining: baseResult.RequiredCapacity,
-		Spare:     baseResult.SpareCapacity,
+		Name:              interfaces.SaturationAnalyzerName,
+		Result:            baseResult,
+		Score:             scoreForAnalyzer(interfaces.SaturationAnalyzerName, config),
+		Remaining:         baseResult.RequiredCapacity,
+		Spare:             baseResult.SpareCapacity,
+		ScaleUpThreshold:  satUp,
+		ScaleDownBoundary: satDown,
 	}}
 	for _, entry := range e.analyzersSnapshot {
 		if entry.name == interfaces.SaturationAnalyzerName {
@@ -148,12 +146,17 @@ func (e *Engine) runAnalyzersAndScore(
 		up, down := resolveThresholds(entry.name, config)
 		applyUniversalThreshold(result, up, down)
 		namedResults = append(namedResults, pipeline.NamedAnalyzerResult{
-			Name:      entry.name,
-			Result:    result,
-			Score:     scoreForAnalyzer(entry.name, config),
-			Remaining: result.RequiredCapacity,
-			Spare:     result.SpareCapacity,
+			Name:              entry.name,
+			Result:            result,
+			Score:             scoreForAnalyzer(entry.name, config),
+			Remaining:         result.RequiredCapacity,
+			Spare:             result.SpareCapacity,
+			ScaleUpThreshold:  up,
+			ScaleDownBoundary: down,
 		})
+	}
+	for _, nr := range namedResults {
+		logAnalyzerResult(ctx, modelID, namespace, nr)
 	}
 	return namedResults, nil
 }
@@ -354,4 +357,84 @@ func (e *Engine) collectV2ModelRequest(
 		Priority:        config.Priority,
 		Disaggregated:   disaggregated,
 	}, nil
+}
+
+// logAnalyzerResult emits one INFO "analyzer-result" line for a single named
+// analyzer result. Called for every analyzer that ran in a model's reconcile
+// cycle, after the universal threshold post-step has been applied.
+func logAnalyzerResult(ctx context.Context, modelID, namespace string, nr pipeline.NamedAnalyzerResult) {
+	if nr.Result == nil {
+		return
+	}
+	logger := ctrl.LoggerFrom(ctx)
+
+	type variantEntry struct {
+		Name   string  `json:"name"`
+		PRC    float64 `json:"prc"`
+		Reason string  `json:"reason,omitempty"`
+	}
+	variants := make([]variantEntry, 0, len(nr.Result.VariantCapacities))
+	for _, vc := range nr.Result.VariantCapacities {
+		variants = append(variants, variantEntry{
+			Name:   vc.VariantName,
+			PRC:    vc.PerReplicaCapacity,
+			Reason: vc.Reason,
+		})
+	}
+
+	logger.Info("analyzer-result",
+		"modelID", modelID,
+		"namespace", namespace,
+		"analyzer", nr.Name,
+		"supply", nr.Result.TotalSupply,
+		"demand", nr.Result.TotalDemand,
+		"util", nr.Result.Utilization,
+		"rc", nr.Result.RequiredCapacity,
+		"sc", nr.Result.SpareCapacity,
+		"scaleUpThreshold", nr.ScaleUpThreshold,
+		"scaleDownBoundary", nr.ScaleDownBoundary,
+		"variants", variants,
+	)
+}
+
+// logScalingDecisions emits one INFO "scaling-decision" line per model after
+// the optimizer has produced per-variant decisions.
+func logScalingDecisions(
+	ctx context.Context,
+	modelRequests []pipeline.ModelScalingRequest,
+	decisions []interfaces.VariantDecision,
+) {
+	logger := ctrl.LoggerFrom(ctx)
+
+	type modelKey struct{ ns, modelID string }
+	type decisionEntry struct {
+		Name   string `json:"name"`
+		Curr   int    `json:"curr"`
+		Tgt    int    `json:"tgt"`
+		Action string `json:"action"`
+	}
+
+	grouped := make(map[modelKey][]decisionEntry, len(modelRequests))
+	for _, d := range decisions {
+		k := modelKey{d.Namespace, d.ModelID}
+		grouped[k] = append(grouped[k], decisionEntry{
+			Name:   d.VariantName,
+			Curr:   d.CurrentReplicas,
+			Tgt:    d.TargetReplicas,
+			Action: string(d.Action),
+		})
+	}
+
+	for _, req := range modelRequests {
+		k := modelKey{req.Namespace, req.ModelID}
+		entries := grouped[k]
+		if len(entries) == 0 {
+			continue
+		}
+		logger.Info("scaling-decision",
+			"modelID", req.ModelID,
+			"namespace", req.Namespace,
+			"decisions", entries,
+		)
+	}
 }
