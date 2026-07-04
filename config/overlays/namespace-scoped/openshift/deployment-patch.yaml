@@ -20,3 +20,5 @@ spec:
           value: "thanos-querier.openshift-monitoring.svc"
         - name: SATURATION_CONFIG_MAP_NAME
           value: "workload-variant-autoscaler-saturation-scaling-config"
+        - name: CONFIG_MAP_NAME
+          value: "workload-variant-autoscaler-manager-config"
