@@ -12,6 +12,26 @@ components:
 - ../../../components/namespace-scoped/
 - ../../../components/openshift
 
+configMapGenerator:
+- name: wva-parameters
+  envs:
+  - params.env
+generatorOptions:
+  disableNameSuffixHash: true
+
+replacements:
+- source:
+    kind: ConfigMap
+    version: v1
+    name: wva-parameters
+    fieldPath: data.wva-controller-image
+  targets:
+  - select:
+      kind: Deployment
+      name: workload-variant-autoscaler-controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].image
+
 patches:
 - patch: |-
     - op: replace
