@@ -22,3 +22,13 @@ patches:
     version: v1
     kind: Deployment
     name: controller-manager
+- patch: |-
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: saturation-scaling-config
+      annotations:
+        opendatahub.io/managed: "false"
+  target:
+    kind: ConfigMap
+    name: saturation-scaling-config
