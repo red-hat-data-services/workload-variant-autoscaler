@@ -14,6 +14,11 @@ jobs:
     name: Sync kustomize manifests to kserve
     runs-on: ubuntu-latest
     steps:
+      - name: Print sync parameters
+        run: |
+          echo "Source: ${{ github.repository }} @ ${{ github.ref_name }}"
+          echo "Target: ${{ github.repository_owner }}/kserve @ ${{ github.ref_name }}"
+
       - name: Checkout workload-variant-autoscaler
         uses: actions/checkout@v4
         with:
