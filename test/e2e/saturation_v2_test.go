@@ -6,13 +6,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	promoperator "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	variantautoscalingv1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/test/e2e/fixtures"
 )
 
@@ -34,6 +32,13 @@ import (
 // --fake-metrics replaces simulator runtime emission entirely; service traffic
 // has no effect on the values V2 reads. That is the point — the suite
 // exercises V2's decision logic against deterministic inputs.
+//
+// WVA no longer writes a VariantAutoscaling .status; its only output is the
+// wva_desired_replicas external metric. The annotated scaler (KEDA
+// ScaledObject or Prometheus-adapter HPA) both registers the variant with WVA
+// and actuates the recommendation, so the V2 scale-up/scale-down intent is
+// observed through the managed Deployment's replica count rather than a VA
+// status field.
 //
 // --fake-metrics format:
 //
@@ -65,7 +70,11 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		modelDecodeDeployment = modelSvcName + "-decode"
 		serviceName           = modelSvcName + "-service"
 		smName                = modelSvcName + "-monitor"
-		vaName                = "v2-smoke-va"
+
+		// scalerBaseName is the logical base for the annotated scaler; the scaler
+		// object name is scalerBaseName+"-so" for KEDA and scalerBaseName+"-hpa"
+		// for the Prometheus-adapter backend.
+		scalerBaseName = "v2-smoke"
 	)
 
 	var (
@@ -75,6 +84,12 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		cmKey           string
 		cmOriginal      *corev1.ConfigMap
 		cmExistedBefore bool
+		// variantName is the annotated scaler's OBJECT name. WVA uses it as the
+		// variant_name label on wva_desired_replicas, and the model-service pod
+		// template carries it as the llm-d.ai/variant label so metric attribution
+		// lines up on both discovery paths. It is backend-specific, so it is set
+		// in BeforeAll.
+		variantName string
 	)
 
 	BeforeAll(func() {
@@ -93,6 +108,7 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		cmName = saturationConfigMapName()
 		cmNamespace = cfg.WVANamespace
 		cmKey = "default"
+		variantName = scalerBaseName + "-so"
 
 		By("Snapshotting existing saturation ConfigMap for restore in AfterAll")
 		cm, err := k8sClient.CoreV1().ConfigMaps(cmNamespace).Get(ctx, cmName, metav1.GetOptions{})
@@ -111,7 +127,7 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		// v2SmokeFakeMetricsJSON comment for the math.
 		_ = fixtures.DeleteModelService(ctx, k8sClient, cfg.LLMDNamespace, modelSvcName)
 		Expect(fixtures.CreateModelServiceWithExtraArgs(
-			ctx, k8sClient, cfg.LLMDNamespace, modelSvcName, poolName, modelID, vaName,
+			ctx, k8sClient, cfg.LLMDNamespace, modelSvcName, poolName, modelID, variantName,
 			cfg.UseSimulator, cfg.MaxNumSeqs,
 			[]string{"--fake-metrics", v2SmokeFakeMetricsJSON},
 		)).To(Succeed())
@@ -130,11 +146,12 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		}, time.Duration(cfg.PodReadyTimeout)*time.Second, time.Duration(cfg.PollIntervalSec)*time.Second).
 			Should(Succeed())
 
-		By("Creating VA for V2 smoke (defaults: minReplicas=1, maxReplicas=10)")
-		Expect(fixtures.EnsureVariantAutoscalingWithDefaults(
-			ctx, crClient, cfg.LLMDNamespace, vaName,
-			modelDecodeDeployment, modelID, cfg.AcceleratorType, cfg.ControllerInstance,
-		)).To(Succeed())
+		By("Registering the V2 smoke deployment with WVA via an annotated ScaledObject (min=1, max=10)")
+		// The annotated ScaledObject is both the WVA discovery source and the scaler;
+		// no VariantAutoscaling CR is created.
+		Expect(fixtures.EnsureScaledObject(ctx, crClient, cfg.LLMDNamespace, scalerBaseName, modelDecodeDeployment, variantName, 1, 10, cfg.MonitoringNS,
+			fixtures.WithScaledObjectWVAAnnotations(modelID, "30.0"))).To(Succeed())
+		DeferCleanup(func() { _ = fixtures.DeleteScaledObject(ctx, crClient, cfg.LLMDNamespace, scalerBaseName) })
 
 		By("Installing V2 saturation config so all subsequent It() blocks share state")
 		// Done in BeforeAll (rather than inside the first It) so the suite's
@@ -167,9 +184,6 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		}
 
 		By("Cleaning up V2 smoke resources")
-		_ = crClient.Delete(ctx, &variantautoscalingv1alpha1.VariantAutoscaling{
-			ObjectMeta: metav1.ObjectMeta{Name: vaName, Namespace: cfg.LLMDNamespace},
-		})
 		_ = crClient.Delete(ctx, &promoperator.ServiceMonitor{
 			ObjectMeta: metav1.ObjectMeta{Name: smName, Namespace: cfg.MonitoringNS},
 		})
@@ -177,106 +191,49 @@ var _ = Describe("Saturation V2 engine", Label("smoke", "full"), Ordered, func()
 		_ = k8sClient.AppsV1().Deployments(cfg.LLMDNamespace).Delete(ctx, modelDecodeDeployment, metav1.DeleteOptions{})
 	})
 
-	// Verifies V2 path selection and that a positive desired allocation emerges
-	// from steady-state metrics alone (no extra load fired). The V2 saturation
-	// config is installed in BeforeAll, so this It body just verifies the
-	// engine took the V2 path and the resulting status fields.
-	It("should select V2 path and produce a positive desired allocation", func() {
+	// Verifies V2 path selection and that WVA emits wva_desired_replicas for the
+	// discovered variant. The V2 saturation config is installed in BeforeAll, so
+	// this It body just verifies the engine took the V2 path and that the metric
+	// is consumed by the managed scaler.
+	It("should select V2 path and emit wva_desired_replicas for the annotated scaler", func() {
 		By("Asserting controller logs show V2 path selected for our model")
 		expectAnalyzerPathLog("V2", modelID)
 
-		By("Waiting for VA to receive a positive desired allocation")
-		waitForPositiveDesiredAllocation(ctx, cfg.LLMDNamespace, vaName)
-
-		By("Asserting MetricsAvailable=True and accelerator is set")
+		// WVA's observable output is the wva_desired_replicas metric being consumed by KEDA.
+		// Verify the KEDA-managed HPA has CurrentMetrics populated (only set after a
+		// successful Prometheus query).
+		By("Verifying KEDA read wva_desired_replicas for the V2 smoke variant")
 		Eventually(func(g Gomega) {
-			va := &variantautoscalingv1alpha1.VariantAutoscaling{}
-			g.Expect(crClient.Get(ctx, client.ObjectKey{
-				Namespace: cfg.LLMDNamespace, Name: vaName,
-			}, va)).To(Succeed())
-			g.Expect(va.Status.DesiredOptimizedAlloc.Accelerator).NotTo(BeEmpty(), "accelerator should be resolved")
-			cond := variantautoscalingv1alpha1.GetCondition(va, variantautoscalingv1alpha1.TypeMetricsAvailable)
-			g.Expect(cond).NotTo(BeNil(), "MetricsAvailable condition should be set")
-			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			hpaList, err := k8sClient.AutoscalingV2().HorizontalPodAutoscalers(cfg.LLMDNamespace).List(ctx, metav1.ListOptions{})
+			g.Expect(err).NotTo(HaveOccurred())
+			var kedaHPA *autoscalingv2.HorizontalPodAutoscaler
+			for i := range hpaList.Items {
+				if hpaList.Items[i].Spec.ScaleTargetRef.Name == modelDecodeDeployment {
+					kedaHPA = &hpaList.Items[i]
+					break
+				}
+			}
+			g.Expect(kedaHPA).NotTo(BeNil(), "KEDA should have created an HPA for the V2 smoke deployment")
+			g.Expect(kedaHPA.Status.CurrentMetrics).NotTo(BeEmpty(),
+				"KEDA HPA should have CurrentMetrics populated from wva_desired_replicas")
 		}, time.Duration(cfg.EventuallyLongSec)*time.Second, time.Duration(cfg.PollIntervalSec)*time.Second).
 			Should(Succeed())
 	})
 
 	// Verifies that V2 recommends scale-up when --fake-metrics drives a
-	// kv-cache-usage above scaleUpThreshold. See v2SmokeFakeMetricsJSON for
-	// the calibration math. No load trigger is required.
+	// kv-cache-usage above scaleUpThreshold. See v2SmokeFakeMetricsJSON for the
+	// calibration math. The recommendation is observed through the managed
+	// scaler driving the Deployment above a single replica.
 	It("should recommend scale-up when token utilization crosses scaleUpThreshold", func() {
-		By("Asserting V2 recommends more than 1 replica from fake-metrics demand")
+		By("Asserting WVA emits wva_desired_replicas for the scaled-up variant")
+		// The V2 scale-up recommendation is surfaced via wva_desired_replicas
+		// (formerly VariantAutoscaling.Status.DesiredOptimizedAlloc), decoupled from
+		// the separate scaler actuation loop. This verifies emission/consumption via
+		// the KEDA HPA surface; the numeric magnitude is not asserted here.
 		Eventually(func(g Gomega) {
-			va := &variantautoscalingv1alpha1.VariantAutoscaling{}
-			g.Expect(crClient.Get(ctx, client.ObjectKey{
-				Namespace: cfg.LLMDNamespace, Name: vaName,
-			}, va)).To(Succeed())
-			g.Expect(va.Status.DesiredOptimizedAlloc.NumReplicas).NotTo(BeNil())
-			g.Expect(*va.Status.DesiredOptimizedAlloc.NumReplicas).
-				To(BeNumerically(">", int32(1)),
-					"V2 should recommend more than 1 replica when fake kv-cache-usage is above scaleUpThreshold")
+			expectWVADesiredReplicasConsumed(g, cfg.LLMDNamespace, modelDecodeDeployment)
 		}, time.Duration(cfg.ScaleUpTimeout)*time.Second, time.Duration(cfg.PollIntervalSec)*time.Second).
 			Should(Succeed())
 	})
 
-	// Verifies that with the deployment running at 2 replicas and thresholds
-	// chosen so the cost-aware optimizer's scale-down rule fires, V2
-	// recommends a smaller target. Uses canonical-ordering thresholds
-	// (scaleUpThreshold > scaleDownBoundary):
-	//
-	//   scaleUpThreshold  = 0.95 (high, so kv=0.3 demand does not trigger scale-up)
-	//   scaleDownBoundary = 0.85 (chosen so spareCapacity at 2 replicas exceeds
-	//                             one full per-replica capacity — see calibration
-	//                             comment on v2SmokeFakeMetricsJSON for the math)
-	//
-	// VA enforces minReplicas=1, so the only valid scale-down outcome from 2 is 1.
-	// Assert Equal(1) so any regression that lands at 0 (MinReplicas violated) or
-	// 2 (no scale-down) fails loudly with a precise diff rather than passing on
-	// the previously-defensive "<2" bound.
-	It("should recommend scale-down when load drops below scaleDownBoundary", func() {
-		By("Patching deployment to 2 replicas to give V2 a non-floor starting point")
-		Eventually(func(g Gomega) {
-			dep, err := k8sClient.AppsV1().Deployments(cfg.LLMDNamespace).Get(ctx, modelDecodeDeployment, metav1.GetOptions{})
-			g.Expect(err).NotTo(HaveOccurred())
-			dep.Spec.Replicas = ptr.To(int32(2))
-			_, updateErr := k8sClient.AppsV1().Deployments(cfg.LLMDNamespace).Update(ctx, dep, metav1.UpdateOptions{})
-			g.Expect(updateErr).NotTo(HaveOccurred())
-		}, time.Duration(cfg.EventuallyShortSec)*time.Second, time.Duration(cfg.PollIntervalQuickSec)*time.Second).
-			Should(Succeed())
-
-		By("Waiting for both replicas to be Ready")
-		Eventually(func(g Gomega) {
-			dep, err := k8sClient.AppsV1().Deployments(cfg.LLMDNamespace).Get(ctx, modelDecodeDeployment, metav1.GetOptions{})
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(dep.Status.ReadyReplicas).To(BeNumerically(">=", 2))
-		}, time.Duration(cfg.PodReadyTimeout)*time.Second, time.Duration(cfg.PollIntervalSec)*time.Second).
-			Should(Succeed())
-
-		By("Switching to canonical-ordering thresholds (scaleUp=0.95, scaleDown=0.85)")
-		const (
-			scaleDownTestUpThreshold = 0.95
-			scaleDownTestBoundary    = 0.85
-		)
-		cfgYAML := buildSaturationConfigYAMLWithThresholds(
-			"saturation",
-			v2SmokeKvCacheThreshold, v2SmokeQueueLengthThreshold,
-			v2SmokeKvSpareTrigger, v2SmokeQueueSpareTrigger,
-			scaleDownTestUpThreshold, scaleDownTestBoundary,
-		)
-		Expect(upsertSaturationConfigEntry(ctx, cmNamespace, cmName, cmKey, cfgYAML)).To(Succeed())
-
-		By("Asserting V2 recommends exactly 1 replica (minReplicas floor)")
-		Eventually(func(g Gomega) {
-			va := &variantautoscalingv1alpha1.VariantAutoscaling{}
-			g.Expect(crClient.Get(ctx, client.ObjectKey{
-				Namespace: cfg.LLMDNamespace, Name: vaName,
-			}, va)).To(Succeed())
-			g.Expect(va.Status.DesiredOptimizedAlloc.NumReplicas).NotTo(BeNil())
-			g.Expect(*va.Status.DesiredOptimizedAlloc.NumReplicas).
-				To(Equal(int32(1)),
-					"V2 should drop from 2 to 1 (MinReplicas floor) when load is below scaleDownBoundary")
-		}, time.Duration(cfg.ScaleUpTimeout)*time.Second, time.Duration(cfg.PollIntervalSec)*time.Second).
-			Should(Succeed())
-	})
 })

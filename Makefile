@@ -23,13 +23,14 @@ NUM_PROMPTS          ?= 3000
 ENVIRONMENT                 ?= kind-emulator
 USE_SIMULATOR               ?= true
 SCALE_TO_ZERO_ENABLED       ?= false
-SCALER_BACKEND              ?= prometheus-adapter  # prometheus-adapter (HPA), keda (ScaledObject), or none (skip, use pre-installed backend)
+SCALER_BACKEND              ?= keda  # keda (ScaledObject) or none (skip, use pre-installed backend)
 LLM_D_ROUTER_VERSION        ?= v0.9.0
 GAIE_VERSION                ?= v1.5.0
 KV_SPARE_TRIGGER           ?=
 QUEUE_SPARE_TRIGGER         ?=
 E2E_MONITORING_NAMESPACE    ?= workload-variant-autoscaler-monitoring
 E2E_EMULATED_LLMD_NAMESPACE ?= llm-d-sim
+E2E_KEDA_NAMESPACE          ?= keda-system
 E2E_WVA_SECONDARY_OVERLAY_PATH ?= $(CURDIR)/test/e2e/testdata/secondary-controller
 # llm-d-benchmark CLI configuration
 # Ensure brew-installed tools (helm >=3.19) take precedence over Rancher Desktop
@@ -96,13 +97,11 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." \
-		output:crd:artifacts:config=config/base/crd \
+manifests: controller-gen ## Generate WebhookConfiguration and ClusterRole objects.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role webhook paths="./..." \
 		output:rbac:artifacts:config=config/base/rbac
-	# controller-gen writes `<group>_<plural>.yaml` and `role.yaml`; rename to
-	# match the (<app>-)?<kind>.yaml convention used under config/.
-	mv config/base/crd/llmd.ai_variantautoscalings.yaml config/base/crd/variantautoscalings-customresourcedefinition.yaml
+	# controller-gen writes `role.yaml`; rename to match the
+	# (<app>-)?<kind>.yaml convention used under config/.
 	mv config/base/rbac/role.yaml config/base/rbac/manager-clusterrole.yaml
 
 .PHONY: generate
@@ -181,7 +180,7 @@ undeploy-wva-on-k8s:
 # For OpenShift/Kubernetes: ENVIRONMENT=openshift LLMD_NS=<your-ns> make deploy-e2e-infra
 # If IMG is set, builds the image locally first (unless SKIP_BUILD=true).
 .PHONY: deploy-e2e-infra
-deploy-e2e-infra: ## Deploy e2e test infrastructure (WVA + EPP; no model server or VA/HPA). Works for kind-emulator, openshift, kubernetes. Uses Prometheus Adapter unless SCALER_BACKEND=keda.
+deploy-e2e-infra: ## Deploy e2e test infrastructure (WVA + EPP; no model server or VA/HPA). Works for kind-emulator, openshift, kubernetes.
 	@echo "Deploying e2e test infrastructure..."
 	@if [ -n "$(IMG)" ]; then \
 		echo "IMG is set to '$(IMG)'"; \
@@ -248,13 +247,42 @@ test-e2e-smoke: ## Run smoke e2e tests
 	SCALER_BACKEND=$(SCALER_BACKEND) \
 	MODEL_ID=$(MODEL_ID) \
 	go test ./test/e2e/ -timeout 35m -v -ginkgo.v \
-		-ginkgo.label-filter="smoke" $(FOCUS_ARGS) $(SKIP_ARGS); \
+		-ginkgo.label-filter="smoke && !keda" $(FOCUS_ARGS) $(SKIP_ARGS); \
 	TEST_EXIT_CODE=$$?; \
 	echo ""; \
 	echo "=========================================="; \
 	echo "Test execution completed. Exit code: $$TEST_EXIT_CODE"; \
 	echo "=========================================="; \
 	exit $$TEST_EXIT_CODE
+
+.PHONY: test-e2e-smoke-keda
+test-e2e-smoke-keda: ## Run KEDA smoke e2e tests (requires SCALER_BACKEND=keda infra)
+	@echo "Running KEDA smoke e2e tests..."
+	$(eval FOCUS_ARGS := $(if $(FOCUS),-ginkgo.focus="$(FOCUS)",))
+	$(eval SKIP_ARGS := $(if $(SKIP),-ginkgo.skip="$(SKIP)",))
+	KUBECONFIG=$(KUBECONFIG) \
+	ENVIRONMENT=$(ENVIRONMENT) \
+	WVA_NAMESPACE=$(CONTROLLER_NAMESPACE) \
+	LLMD_NAMESPACE=$(E2E_EMULATED_LLMD_NAMESPACE) \
+	MONITORING_NAMESPACE=$(E2E_MONITORING_NAMESPACE) \
+	WVA_E2E_SECONDARY_OVERLAY_PATH=$${WVA_E2E_SECONDARY_OVERLAY_PATH:-$(E2E_WVA_SECONDARY_OVERLAY_PATH)} \
+	USE_SIMULATOR=$(USE_SIMULATOR) \
+	SCALE_TO_ZERO_ENABLED=$(SCALE_TO_ZERO_ENABLED) \
+	SCALER_BACKEND=keda \
+	MODEL_ID=$(MODEL_ID) \
+	go test ./test/e2e/ -timeout 35m -v -ginkgo.v \
+		-ginkgo.label-filter="smoke && keda" $(FOCUS_ARGS) $(SKIP_ARGS); \
+	TEST_EXIT_CODE=$$?; \
+	echo ""; \
+	echo "=========================================="; \
+	echo "Test execution completed. Exit code: $$TEST_EXIT_CODE"; \
+	echo "=========================================="; \
+	exit $$TEST_EXIT_CODE
+
+.PHONY: test-e2e-smoke-keda-with-setup
+test-e2e-smoke-keda-with-setup: ## Deploy KEDA infra and run KEDA smoke e2e tests
+	$(MAKE) deploy-e2e-infra SCALER_BACKEND=keda
+	$(MAKE) test-e2e-smoke-keda
 
 # Runs the complete e2e test suite (excluding flaky tests).
 .PHONY: test-e2e-full
@@ -271,7 +299,7 @@ test-e2e-full: ## Run full e2e test suite
 	SCALER_BACKEND=$(SCALER_BACKEND) \
 	MODEL_ID=$(MODEL_ID) \
 	go test ./test/e2e/ -timeout 35m -v -ginkgo.v \
-		-ginkgo.label-filter="full && !flaky" $(FOCUS_ARGS) $(SKIP_ARGS); \
+		-ginkgo.label-filter="full && !flaky && !keda" $(FOCUS_ARGS) $(SKIP_ARGS); \
 	TEST_EXIT_CODE=$$?; \
 	echo ""; \
 	echo "=========================================="; \
@@ -281,7 +309,7 @@ test-e2e-full: ## Run full e2e test suite
 
 # Convenience targets for local e2e testing
 
-# Convenience target that deploys infra + runs smoke tests.
+# Convenience target that deploys infra + runs smoke tests (HPA / Prometheus Adapter path).
 # Set DELETE_CLUSTER=true to delete Kind cluster after tests (default: keep cluster for debugging).
 .PHONY: test-e2e-smoke-with-setup
 test-e2e-smoke-with-setup: deploy-e2e-infra test-e2e-smoke
@@ -323,6 +351,36 @@ test-e2e-full-with-setup:
 	DEPLOY_LWS=true $(MAKE) deploy-e2e-infra
 	$(MAKE) test-e2e-full
 
+# Runs the full e2e suite against a KEDA backend (no Prometheus Adapter).
+# Label filter includes keda-labeled tests since KEDA is installed on the cluster.
+.PHONY: test-e2e-full-keda
+test-e2e-full-keda: ## Run full e2e test suite against KEDA backend
+	@echo "Running full e2e test suite (KEDA backend)..."
+	$(eval FOCUS_ARGS := $(if $(FOCUS),-ginkgo.focus="$(FOCUS)",))
+	$(eval SKIP_ARGS := $(if $(SKIP),-ginkgo.skip="$(SKIP)",))
+	KUBECONFIG=$(KUBECONFIG) \
+	ENVIRONMENT=$(ENVIRONMENT) \
+	WVA_NAMESPACE=$(CONTROLLER_NAMESPACE) \
+	WVA_E2E_SECONDARY_OVERLAY_PATH=$${WVA_E2E_SECONDARY_OVERLAY_PATH:-$(E2E_WVA_SECONDARY_OVERLAY_PATH)} \
+	USE_SIMULATOR=$(USE_SIMULATOR) \
+	SCALE_TO_ZERO_ENABLED=$(SCALE_TO_ZERO_ENABLED) \
+	SCALER_BACKEND=keda \
+	KEDA_NAMESPACE=$(E2E_KEDA_NAMESPACE) \
+	MODEL_ID=$(MODEL_ID) \
+	go test ./test/e2e/ -timeout 35m -v -ginkgo.v \
+		-ginkgo.label-filter="full && !smoke && !flaky" $(FOCUS_ARGS) $(SKIP_ARGS); \
+	TEST_EXIT_CODE=$$?; \
+	echo ""; \
+	echo "=========================================="; \
+	echo "Test execution completed. Exit code: $$TEST_EXIT_CODE"; \
+	echo "=========================================="; \
+	exit $$TEST_EXIT_CODE
+
+.PHONY: test-e2e-full-keda-with-setup
+test-e2e-full-keda-with-setup: ## Deploy KEDA infra and run full e2e test suite
+	DEPLOY_LWS=true SCALER_BACKEND=keda $(MAKE) deploy-e2e-infra
+	$(MAKE) test-e2e-full-keda
+
 
 ##@ llm-d-benchmark CLI (standup / run / teardown)
 
@@ -334,7 +392,7 @@ LLMDBENCHMARK        = $(shell command -v llmdbenchmark 2>/dev/null || echo $(BE
 BENCHMARK_CLI_FLAGS = --spec $(BENCHMARK_SPEC) --workspace $(BENCHMARK_WORKSPACE) --base-dir $(BENCHMARK_REPO_DIR)
 
 .PHONY: benchmark-install
-benchmark-install: ## Clone llm-d-benchmark at BENCHMARK_REPO_REF (default v0.6.3) and install the llmdbenchmark CLI
+benchmark-install: ## Clone llm-d-benchmark at BENCHMARK_REPO_REF (default v0.7.0) and install the llmdbenchmark CLI
 	@if [ ! -d "$(BENCHMARK_REPO_DIR)" ]; then \
 		echo "Cloning llm-d-benchmark @ $(BENCHMARK_REPO_REF)..."; \
 		git clone --branch $(BENCHMARK_REPO_REF) $(BENCHMARK_REPO_URL) $(BENCHMARK_REPO_DIR); \
@@ -353,16 +411,38 @@ benchmark-standup: ## Stand up the benchmark environment (set BENCHMARK_NAMESPAC
 		echo "ERROR: BENCHMARK_NAMESPACE is required. Usage: make benchmark-standup BENCHMARK_NAMESPACE=<namespace>"; \
 		exit 1; \
 	fi
-	@echo "Injecting PYTORCH_ALLOC_CONF into scenario YAML..."
+	@if [ -f "$(CURDIR)/hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml" ]; then \
+		echo "Copying local scenario: hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml -> $(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml"; \
+		mkdir -p "$(BENCHMARK_REPO_DIR)/config/scenarios/$$(dirname $(BENCHMARK_SPEC))"; \
+		cp "$(CURDIR)/hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml" \
+		   "$(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml"; \
+	fi
+	@if [ -f "$(CURDIR)/hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml.j2" ]; then \
+		echo "Copying local specification: hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml.j2 -> $(BENCHMARK_REPO_DIR)/config/specification/$(BENCHMARK_SPEC).yaml.j2"; \
+		mkdir -p "$(BENCHMARK_REPO_DIR)/config/specification/$$(dirname $(BENCHMARK_SPEC))"; \
+		cp "$(CURDIR)/hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml.j2" \
+		   "$(BENCHMARK_REPO_DIR)/config/specification/$(BENCHMARK_SPEC).yaml.j2"; \
+	fi
+	@if [ "$(BENCHMARK_SKIP_PROMETHEUS_ADAPTER)" = "true" ]; then \
+		echo "Stubbing prometheus-adapter-resource-reader ClusterRole so standup's existing-PA probe passes..."; \
+		kubectl create clusterrole prometheus-adapter-resource-reader \
+			--verb=get,list,watch --resource=pods,nodes 2>/dev/null || true; \
+		kubectl annotate --overwrite clusterrole prometheus-adapter-resource-reader \
+			meta.helm.sh/release-name=prometheus-adapter \
+			meta.helm.sh/release-namespace=$(WVA_MONITORING_NAMESPACE); \
+		kubectl label --overwrite clusterrole prometheus-adapter-resource-reader \
+			app.kubernetes.io/managed-by=Helm; \
+	fi
+	@echo "Injecting PYTORCH_ALLOC_CONF into scenario YAML ($(BENCHMARK_SPEC).yaml)..."
 	@sed -i.bak 's/extraEnvVars: \[\]/extraEnvVars:\n        - name: PYTORCH_ALLOC_CONF\n          value: "expandable_segments:True"/' \
-		$(BENCHMARK_REPO_DIR)/config/scenarios/guides/workload-autoscaling.yaml
+		$(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml
 	$(LLMDBENCHMARK) $(BENCHMARK_CLI_FLAGS) standup \
 		-p $(BENCHMARK_NAMESPACE) \
 		$(if $(BENCHMARK_MODEL_ID),-m $(BENCHMARK_MODEL_ID),) \
 		$(if $(filter true,$(BENCHMARK_MONITORING)),--monitoring,); \
 	rc=$$?; \
-	mv $(BENCHMARK_REPO_DIR)/config/scenarios/guides/workload-autoscaling.yaml.bak \
-	   $(BENCHMARK_REPO_DIR)/config/scenarios/guides/workload-autoscaling.yaml; \
+	mv $(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml.bak \
+	   $(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml; \
 	exit $$rc
 
 .PHONY: benchmark-run
@@ -374,6 +454,8 @@ benchmark-run: ## Run a single benchmark workload (set BENCHMARK_NAMESPACE=<name
 	@if [ -f "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD).in" ]; then \
 		cp "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD).in" \
 		   "$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD).in"; \
+		cp "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD).in" \
+		   "$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD)"; \
 	fi
 	$(LLMDBENCHMARK) $(BENCHMARK_CLI_FLAGS) run \
 		-p $(BENCHMARK_NAMESPACE) \
@@ -386,6 +468,7 @@ benchmark-run: ## Run a single benchmark workload (set BENCHMARK_NAMESPACE=<name
 	@echo "  Generating benchmark report..."
 	@echo "========================================="
 	@$(MAKE) benchmark-report
+	@$(MAKE) benchmark-plot-two-variant || true
 
 .PHONY: benchmark-report
 benchmark-report: ## Generate a markdown table from the latest benchmark results
@@ -396,7 +479,62 @@ benchmark-report: ## Generate a markdown table from the latest benchmark results
 	fi; \
 	echo "Results directory: $$LATEST_DIR"; \
 	echo ""; \
-	python3 $(CURDIR)/hack/benchmark/postprocess.py $$LATEST_DIR
+	if [ -n "$(BENCHMARK_TWO_VARIANT_SECONDARY_SUFFIX)" ]; then \
+		python3 $(CURDIR)/hack/benchmark/postprocess.py \
+			--secondary-suffix $(BENCHMARK_TWO_VARIANT_SECONDARY_SUFFIX) \
+			--scenario-yaml $(CURDIR)/hack/benchmark/scenarios/$(BENCHMARK_SPEC).yaml \
+			--variant-config $(VARIANT_CONFIG) \
+			$$LATEST_DIR; \
+	else \
+		python3 $(CURDIR)/hack/benchmark/postprocess.py $$LATEST_DIR; \
+	fi
+
+BENCHMARK_TWO_VARIANT_SECONDARY_SUFFIX ?= v2
+
+.PHONY: benchmark-plot-two-variant
+benchmark-plot-two-variant: ## Plot two-variant replica/latency/throughput graph from the latest results (no-op for single-variant runs)
+	@LATEST_DIR=$$(ls -td $(BENCHMARK_WORKSPACE)/$${USER}-*/results/$(BENCHMARK_HARNESS)-*_* 2>/dev/null | head -1); \
+	if [ -z "$$LATEST_DIR" ]; then \
+		echo "No benchmark results found, skipping two-variant plot"; \
+		exit 0; \
+	fi; \
+	python3 $(CURDIR)/hack/benchmark/plot_two_variant_pipeline.py \
+		$$LATEST_DIR && \
+	echo "Two-variant plot: $$LATEST_DIR/metrics/graphs/two_variant_v2_full_pipeline.png"
+
+VARIANT_CONFIG ?= $(CURDIR)/hack/benchmark/scenarios/guides/variants/v2-tp1-cheaper.yaml
+WVA_V2_SATURATION_CONFIGMAP ?= $(CURDIR)/hack/benchmark/scenarios/wva_threshold/wva_saturation_v2_config.yaml
+WVA_CONTROLLER_DEPLOY ?= deploy/workload-variant-autoscaler-controller-manager
+WVA_ROLLOUT_TIMEOUT ?= 120s
+WVA_MONITORING_NAMESPACE ?= workload-variant-autoscaler-monitoring
+
+.PHONY: benchmark-add-variant
+benchmark-add-variant: ## Add a secondary WVA variant to the running benchmark (set BENCHMARK_NAMESPACE=<namespace>, optional VARIANT_CONFIG=<path>)
+	@if [ -z "$(BENCHMARK_NAMESPACE)" ]; then \
+		echo "ERROR: BENCHMARK_NAMESPACE is required. Usage: make benchmark-add-variant BENCHMARK_NAMESPACE=<namespace>"; \
+		exit 1; \
+	fi
+	python3 $(CURDIR)/hack/benchmark/add_variant.py \
+		-n $(BENCHMARK_NAMESPACE) \
+		--config $(VARIANT_CONFIG)
+
+.PHONY: benchmark-enable-v2-saturation
+benchmark-enable-v2-saturation: ## Enable WVA saturation V2 analyzer (apply configmap + restart controller)
+	@if [ -z "$(BENCHMARK_NAMESPACE)" ]; then \
+		echo "ERROR: BENCHMARK_NAMESPACE is required. Usage: make benchmark-enable-v2-saturation BENCHMARK_NAMESPACE=<namespace>"; \
+		exit 1; \
+	fi
+	kubectl apply -n $(BENCHMARK_NAMESPACE) -f $(WVA_V2_SATURATION_CONFIGMAP)
+	$(MAKE) benchmark-restart-controller BENCHMARK_NAMESPACE=$(BENCHMARK_NAMESPACE)
+
+.PHONY: benchmark-restart-controller
+benchmark-restart-controller: ## Restart WVA controller to flush in-memory state (e.g., k2 history between runs)
+	@if [ -z "$(BENCHMARK_NAMESPACE)" ]; then \
+		echo "ERROR: BENCHMARK_NAMESPACE is required. Usage: make benchmark-restart-controller BENCHMARK_NAMESPACE=<namespace>"; \
+		exit 1; \
+	fi
+	kubectl rollout restart -n $(BENCHMARK_NAMESPACE) $(WVA_CONTROLLER_DEPLOY)
+	kubectl rollout status -n $(BENCHMARK_NAMESPACE) $(WVA_CONTROLLER_DEPLOY) --timeout=$(WVA_ROLLOUT_TIMEOUT)
 
 BURSTY_WORKLOAD    ?= bursty.yaml
 BENCHMARK_WAIT_TIMEOUT ?= 7200
@@ -610,33 +748,6 @@ controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessar
 $(CONTROLLER_GEN): $(LOCALBIN)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
 
-
-CRD_REF_DOCS_BIN := $(shell go env GOPATH)/bin/crd-ref-docs
-CRD_SOURCE_PATH := ./api/v1alpha1
-CRD_CONFIG := ./hack/crd-doc-gen/config.yaml
-CRD_RENDERER := markdown
-CRD_OUTPUT := ./docs/user-guide/crd-reference.md
-
-.PHONY: crd-docs install-crd-ref-docs
-
-# Install crd-ref-docs if not already present
-install-crd-ref-docs:
-	@if [ ! -f "$(CRD_REF_DOCS_BIN)" ]; then \
-		echo "Installing crd-ref-docs..."; \
-		go install github.com/elastic/crd-ref-docs@latest; \
-	fi
-
-# Generate CRD documentation
-crd-docs: install-crd-ref-docs
-	$(CRD_REF_DOCS_BIN) \
-		--source-path=$(CRD_SOURCE_PATH) \
-		--config=$(CRD_CONFIG) \
-		--renderer=$(CRD_RENDERER)
-		# Fallback: if the tool produced out.md, rename it
-	@if [ -f ./out.md ]; then mv ./out.md $(CRD_OUTPUT); fi
-	@if [ -f ./docs/out.md ]; then mv ./docs/out.md $(CRD_OUTPUT); fi
-	@test -f $(CRD_OUTPUT) && echo "✅ CRD documentation generated at $(CRD_OUTPUT)" || \
-	 (echo "❌ Expected $(CRD_OUTPUT) not found. Check $(CRD_CONFIG) or tool output."; exit 1)
 
 .PHONY: setup-envtest
 setup-envtest: envtest ## Download the binaries required for ENVTEST in the local bin directory.
