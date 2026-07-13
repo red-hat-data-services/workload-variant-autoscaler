@@ -103,7 +103,6 @@ export WVA_IMAGE_TAG="latest"               # WVA version
 # HPA stabilization: configure on the HPA resource directly, not install.sh
 
 # Performance tuning (optional; set in llm-d ModelService manifest)
-export VLLM_MAX_NUM_SEQS=64                 # vLLM max concurrent sequences (batch size)
 export ACCELERATOR_TYPE="A100"              # GPU type (auto-detected)
 ```
 
@@ -151,7 +150,6 @@ make deploy-wva-on-k8s   # install.sh (WVA + monitoring + scaler + LWS)
 export DEPLOY_WVA=true
 export DEPLOY_PROMETHEUS=true
 export DEPLOY_OPERATIONAL_DASHBOARD=true  # Grafana and operational dashboard
-export VLLM_SVC_ENABLED=true
 export DEPLOY_PROMETHEUS_ADAPTER=false
 make deploy-wva-on-k8s
 ```
@@ -169,7 +167,6 @@ make deploy-wva-on-k8s
 ```bash
 export HF_TOKEN="hf_xxxxx"
 export MODEL_ID="unsloth/Meta-Llama-3.1-8B"
-export VLLM_MAX_NUM_SEQS=64         # Match desired max batch size
 make deploy-wva-on-k8s
 ```
 

@@ -23,6 +23,7 @@ import (
 	goflag "flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -48,7 +49,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
-	llmdVariantAutoscalingV1alpha1 "github.com/llm-d/llm-d-workload-variant-autoscaler/api/v1alpha1"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/locator"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/registration"
 	"github.com/llm-d/llm-d-workload-variant-autoscaler/internal/collector/source"
@@ -84,7 +84,6 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(llmdVariantAutoscalingV1alpha1.AddToScheme(scheme))
 	utilruntime.Must(promoperator.AddToScheme(scheme))
 	utilruntime.Must(inferencePoolV1.Install(scheme))
 	utilruntime.Must(inferencePoolV1alpha2.Install(scheme))
@@ -201,18 +200,7 @@ func main() {
 		setupLog.Info("LeaderWorkerSet CRD not found - support disabled (Deployment-only mode)")
 	}
 
-	vaCRDEnabled, err := crd.CheckVariantAutoscalingCRD(restConfig, setupLog)
-	if err != nil {
-		setupLog.Error(err, "failed to determine VariantAutoscaling CRD availability")
-		os.Exit(1)
-	}
-	if vaCRDEnabled {
-		setupLog.Info("VariantAutoscaling CRD detected - support enabled")
-	} else {
-		setupLog.Info("VariantAutoscaling CRD not found - VA reconciler disabled; annotation-based discovery remains enabled")
-	}
-
-	// Detect KEDA for annotation-based ScaledObject discovery (dual-mode, Phase 1)
+	// Detect KEDA for annotation-based ScaledObject discovery
 	kedaEnabled := crd.CheckKEDACRD(restConfig, setupLog)
 	if kedaEnabled {
 		setupLog.Info("KEDA ScaledObject CRD detected - annotation-based ScaledObject discovery enabled")
@@ -393,9 +381,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup custom indexes for lookups on VariantAutoscalings
+	// Setup custom indexes for lookups on HPAs and ScaledObjects
 	setupLog.Info("Setting up indexes")
-	if err := indexers.SetupIndexes(context.Background(), mgr, vaCRDEnabled, kedaEnabled); err != nil {
+	if err := indexers.SetupIndexes(context.Background(), mgr, kedaEnabled); err != nil {
 		setupLog.Error(err, "unable to setup indexes")
 		os.Exit(1)
 	}
@@ -432,15 +420,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Always validate TLS configuration since HTTPS is required
+	// Validate Prometheus transport configuration before creating the client.
 	if err := utils.ValidateTLSConfig(cfg); err != nil {
-		setupLog.Error(err, "TLS configuration validation failed - HTTPS is required")
+		setupLog.Error(err, "Prometheus transport configuration validation failed")
 		os.Exit(1)
 	}
 
+	promURL, _ := url.Parse(cfg.PrometheusBaseURL()) // already validated above
 	setupLog.Info("Initializing Prometheus client",
-		"address", cfg.PrometheusBaseURL(),
-		"tlsEnabled", true,
+		"address", promURL.Redacted(),
+		"tlsEnabled", utils.IsHTTPS(cfg.PrometheusBaseURL()),
+		"allowHTTP", cfg.PrometheusAllowHTTP(),
 	)
 
 	// Create Prometheus client with TLS support
@@ -521,24 +511,6 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "unable to add optimization engine loop to manager")
 		os.Exit(1)
-	}
-
-	if vaCRDEnabled {
-		// Create the reconciler with unified Config and datastore
-		reconciler := controller.NewVariantAutoscalingReconciler(
-			mgr.GetClient(),
-			mgr.GetScheme(),
-			mgr.GetEventRecorderFor("workload-variant-autoscaler-controller-manager"),
-			cfg,
-			ds,
-			lwsEnabled,
-		)
-
-		// Setup the controller with the manager
-		if err = reconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller")
-			os.Exit(1)
-		}
 	}
 
 	// HPAReconciler: tracks namespaces for annotation-based discovery (always registered).
