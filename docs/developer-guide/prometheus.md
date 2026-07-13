@@ -54,6 +54,7 @@ spec:
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
 | `PROMETHEUS_BASE_URL` | Yes | Prometheus server URL (HTTPS only in production) | - |
+| `PROMETHEUS_ALLOW_HTTP` | No | Allow a plain `http://` `PROMETHEUS_BASE_URL` (dev/test only; cannot be combined with TLS settings or bearer token auth) | `false` |
 | `PROMETHEUS_TLS_INSECURE_SKIP_VERIFY` | No | Skip TLS certificate verification (dev/test only) | `false` |
 | `PROMETHEUS_CA_CERT_PATH` | No | Path to CA certificate for TLS verification | - |
 | `PROMETHEUS_CLIENT_CERT_PATH` | No | Path to client certificate for mutual TLS | - |
@@ -132,6 +133,14 @@ spec:
   export PROMETHEUS_BASE_URL=https://127.0.0.1:9091
   export PROMETHEUS_TLS_INSECURE_SKIP_VERIFY=true
   ```
+- If your Prometheus is only reachable over plain HTTP (e.g. `kube-prometheus-stack`'s
+  default in-cluster service), set `PROMETHEUS_ALLOW_HTTP=true` and use an
+  `http://` `PROMETHEUS_BASE_URL` instead of standing up a TLS-terminating proxy.
+  This cannot be combined with `PROMETHEUS_TLS_INSECURE_SKIP_VERIFY`,
+  `PROMETHEUS_SERVER_NAME`, any `PROMETHEUS_CA_CERT_PATH`/client cert settings, or
+  bearer token auth — WVA refuses to start if those are set alongside a plain HTTP
+  URL. Note that credentials and metrics are sent in cleartext, so use this only
+  on a trusted network (dev/test or a secured in-cluster path).
 
 ### PromQL Injection Prevention
 
@@ -870,7 +879,7 @@ With WVA metrics, the value for the label `namespace` is the WVA controller name
 
 ### `wva_errors_total`
 - **Type**: Counter
-- **Description**: Total number of errors by component. The components are "collector", "analyzer", "optimizer", "limiter", "enforcer", and "controller". Some of the compoments currently may not have any `wva_errors_total` metrics. They may be available in future WVA versions.
+- **Description**: Total number of errors by component. The components are "collector", "analyzer", "optimizer", "limiter", "enforcer", and "controller". Some of the components currently may not have any `wva_errors_total` metrics. They may be available in future WVA versions.
 - **Labels**:
   - `component`: Component where the error occurred
   - `error_type`: Type or category of the error

@@ -14,7 +14,6 @@ WORKDIR $APP_ROOT/src/
 COPY go.mod ./
 COPY go.sum ./
 COPY cmd/main.go cmd/main.go
-COPY api/ api/
 COPY internal/ internal/
 COPY pkg/ pkg/
 RUN go mod download && \
