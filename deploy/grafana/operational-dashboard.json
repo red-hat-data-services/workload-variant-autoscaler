@@ -1511,7 +1511,7 @@
             "uid": "$datasource_uid"
           },
           "editorMode": "code",
-          "expr": "sum(rate(wva_decisions_limited_total{$namespace_label=~\"$namespace\", variant_name=~\"$variant\"}[1h])) by ($namespace_label, variant_name, limiter_name) * max(wva_config_optimization_interval_seconds)",
+          "expr": "sum(rate(wva_decisions_limited_total{$namespace_label=~\"$namespace\", variant_name=~\"$variant\"}[1h])) by ($namespace_label, variant_name, limiter_name) * scalar(max(wva_config_optimization_interval_seconds))",
           "instant": false,
           "legendFormat": "{{variant_name}} - {{limiter_name}}",
           "range": true,
