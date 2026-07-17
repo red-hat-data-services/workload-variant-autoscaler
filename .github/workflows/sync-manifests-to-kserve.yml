@@ -1,0 +1,86 @@
+name: Sync Manifests to kserve
+
+on:
+  push:
+    branches: [main]
+    paths: ['config/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync kustomize manifests to kserve
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print sync parameters
+        run: |
+          echo "Source: ${{ github.repository }} @ ${{ github.ref_name }}"
+          echo "Target: ${{ github.repository_owner }}/kserve @ ${{ github.ref_name }}"
+
+      - name: Checkout workload-variant-autoscaler
+        uses: actions/checkout@v4
+        with:
+          path: workload-variant-autoscaler
+
+      - name: Generate token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RHDS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RHDS_CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: kserve
+
+      - name: Checkout kserve
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/kserve
+          ref: ${{ github.ref_name }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: kserve
+
+      - name: Sync manifests
+        run: |
+          DEST="kserve/kserve-module/prefetched-manifests-rhoai/wva"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -r workload-variant-autoscaler/config/. "$DEST/"
+
+      - name: Detect changes
+        id: changes
+        working-directory: kserve
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No manifest changes detected — skipping PR creation."
+          fi
+
+      - name: Create sync PR
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        working-directory: kserve
+        run: |
+          SAFE_BRANCH="${SOURCE_BRANCH//\//-}"
+          SYNC_BRANCH="manifests-sync/wva-${SAFE_BRANCH}-${SOURCE_SHA:0:8}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$SYNC_BRANCH"
+          git add --all kserve-module/prefetched-manifests-rhoai/wva/
+          git commit -m "chore: sync workload-variant-autoscaler manifests from ${REPO_OWNER}/workload-variant-autoscaler@${SOURCE_SHA:0:8}"
+          git push origin "$SYNC_BRANCH"
+
+          gh pr create \
+            --repo "${REPO_OWNER}/kserve" \
+            --base "$SOURCE_BRANCH" \
+            --head "$SYNC_BRANCH" \
+            --title "chore: sync workload-variant-autoscaler manifests" \
+            --body "Automated sync of kustomize manifests from [${REPO_OWNER}/workload-variant-autoscaler@${SOURCE_SHA}](https://github.com/${REPO_OWNER}/workload-variant-autoscaler/commit/${SOURCE_SHA})"
