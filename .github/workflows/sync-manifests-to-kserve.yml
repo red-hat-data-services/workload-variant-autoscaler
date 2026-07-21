@@ -59,28 +59,33 @@ jobs:
             echo "No manifest changes detected — skipping PR creation."
           fi
 
-      - name: Create sync PR
+      - name: Push updated manifests to KServe
         if: steps.changes.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO_OWNER: ${{ github.repository_owner }}
           SOURCE_BRANCH: ${{ github.ref_name }}
           SOURCE_SHA: ${{ github.sha }}
         working-directory: kserve
         run: |
-          SAFE_BRANCH="${SOURCE_BRANCH//\//-}"
-          SYNC_BRANCH="manifests-sync/wva-${SAFE_BRANCH}-${SOURCE_SHA:0:8}"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$SYNC_BRANCH"
           git add --all kserve-module/prefetched-manifests-rhoai/wva/
           git commit -m "chore: sync workload-variant-autoscaler manifests from ${REPO_OWNER}/workload-variant-autoscaler@${SOURCE_SHA:0:8}"
-          git push origin "$SYNC_BRANCH"
+          MAX_RETRIES=5
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            if git push origin "$SOURCE_BRANCH"; then
+              echo "Push of updated manifests succeeded (attempt ${attempt})"
+              exit 0
+            fi
+            echo "Push of updated manifests failed (attempt ${attempt})"
+            if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+              echo "Rebasing and retrying"
+              if ! git pull --rebase origin "$SOURCE_BRANCH"; then
+                echo "ERROR: Rebase failed. Aborting." >&2
+                exit 1
+              fi
+            fi
+          done
+          echo "ERROR: All retries exhausted. Push failed." >&2
+          exit 1
 
-          gh pr create \
-            --repo "${REPO_OWNER}/kserve" \
-            --base "$SOURCE_BRANCH" \
-            --head "$SYNC_BRANCH" \
-            --title "chore: sync workload-variant-autoscaler manifests" \
-            --body "Automated sync of kustomize manifests from [${REPO_OWNER}/workload-variant-autoscaler@${SOURCE_SHA}](https://github.com/${REPO_OWNER}/workload-variant-autoscaler/commit/${SOURCE_SHA})"
