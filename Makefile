@@ -426,6 +426,11 @@ benchmark-standup: ## Stand up the benchmark environment (set BENCHMARK_NAMESPAC
 	rc=$$?; \
 	mv $(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml.bak \
 	   $(BENCHMARK_REPO_DIR)/config/scenarios/$(BENCHMARK_SPEC).yaml; \
+	if [ $$rc -eq 0 ] && [ "$(BENCHMARK_MONITORING)" = "true" ]; then \
+		echo "Enabling user-workload monitoring for namespace $(BENCHMARK_NAMESPACE)..."; \
+		oc label namespace $(BENCHMARK_NAMESPACE) openshift.io/user-workload-monitoring=enabled --overwrite 2>/dev/null && \
+		echo "✅ Monitoring label applied. Prometheus will begin scraping ServiceMonitors in this namespace."; \
+	fi; \
 	exit $$rc
 
 .PHONY: benchmark-run
@@ -435,6 +440,12 @@ benchmark-run: ## Run a single benchmark workload (set BENCHMARK_NAMESPACE=<name
 		exit 1; \
 	fi
 	@mkdir -p "$(BENCHMARK_SCENARIOS_DIR)"
+	@if [ "$(BENCHMARK_DIRECT_KEDA)" = "true" ] && [ -f "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD)" ]; then \
+		echo "Injecting external model endpoint for direct-KEDA mode..."; \
+		sed -i.bak 's|base_url: .*|base_url: http://infra-llmdbench-inference-gateway.$(BENCHMARK_NAMESPACE).svc.cluster.local:80|' \
+			"$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD)"; \
+		rm -f "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD).bak"; \
+	fi
 	@# Fetch workload from inference-perf catalog if not found locally and harness is inference-perf
 	@if [ "$(BENCHMARK_HARNESS)" = "inference-perf" ] && [ ! -f "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD)" ] && [ ! -f "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD).in" ]; then \
 		echo "Fetching $(BENCHMARK_WORKLOAD) from inference-perf workload-catalog..."; \
@@ -452,13 +463,24 @@ benchmark-run: ## Run a single benchmark workload (set BENCHMARK_NAMESPACE=<name
 		   "$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD).in"; \
 		cp "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD).in" \
 		   "$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD)"; \
+	elif [ -f "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD)" ]; then \
+		echo "Copying local workload from $(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD) to harness..."; \
+		cp "$(BENCHMARK_SCENARIOS_DIR)/$(BENCHMARK_WORKLOAD)" \
+		   "$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD).yaml"; \
+		if [ -n "$(BENCHMARK_MODEL_ID)" ]; then \
+			echo "Injecting MODEL_ID=$(BENCHMARK_MODEL_ID) into workload profile..."; \
+			sed -i.bak 's|model_name: .*|model_name: $(BENCHMARK_MODEL_ID)|' \
+				"$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD).yaml"; \
+			rm -f "$(BENCHMARK_REPO_DIR)/workload/profiles/$(BENCHMARK_HARNESS)/$(BENCHMARK_WORKLOAD).yaml.bak"; \
+		fi; \
 	fi
 	$(LLMDBENCHMARK) $(BENCHMARK_CLI_FLAGS) run \
 		-p $(BENCHMARK_NAMESPACE) \
 		-l $(BENCHMARK_HARNESS) \
-		-w $(BENCHMARK_WORKLOAD) \
+		-w $(BENCHMARK_WORKLOAD).yaml \
 		$(if $(BENCHMARK_MODEL_ID),-m $(BENCHMARK_MODEL_ID),) \
-		$(if $(filter true,$(BENCHMARK_MONITORING)),--monitoring,)
+		$(if $(filter true,$(BENCHMARK_MONITORING)),--monitoring,) \
+		--wait-timeout $(BENCHMARK_WAIT_TIMEOUT)
 	@echo ""
 	@echo "========================================="
 	@echo "  Generating benchmark report..."
