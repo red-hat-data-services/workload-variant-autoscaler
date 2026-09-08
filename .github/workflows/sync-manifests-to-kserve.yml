@@ -1,6 +1,11 @@
 name: Sync Manifests to kserve
 
 on:
+  pull_request_target:
+    branches:
+      - 'rhoai-[0-9].[0-9]**'
+    types: [closed]
+    paths: ['config/**']
   push:
     branches: [main]
     paths: ['config/**']
@@ -11,17 +16,22 @@ permissions:
 
 jobs:
   sync:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.merged == true
     name: Sync kustomize manifests to kserve
     runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ github.event_name == 'pull_request_target' && github.base_ref || github.ref_name }}
     steps:
       - name: Print sync parameters
         run: |
-          echo "Source: ${{ github.repository }} @ ${{ github.ref_name }}"
-          echo "Target: ${{ github.repository_owner }}/kserve @ ${{ github.ref_name }}"
+          echo "Source: ${{ github.repository }} @ ${{ env.TARGET_BRANCH }}"
+          echo "Target: ${{ github.repository_owner }}/kserve @ ${{ env.TARGET_BRANCH }}"
 
       - name: Checkout workload-variant-autoscaler
+        id: checkout-source
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           path: workload-variant-autoscaler
 
       - name: Generate token
@@ -37,7 +47,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/kserve
-          ref: ${{ github.ref_name }}
+          ref: ${{ env.TARGET_BRANCH }}
           token: ${{ steps.app-token.outputs.token }}
           path: kserve
 
@@ -63,8 +73,8 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         env:
           REPO_OWNER: ${{ github.repository_owner }}
-          SOURCE_BRANCH: ${{ github.ref_name }}
-          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_BRANCH: ${{ env.TARGET_BRANCH }}
+          SOURCE_SHA: ${{ steps.checkout-source.outputs.commit }}
         working-directory: kserve
         run: |
           git config user.name "github-actions[bot]"
