@@ -5,10 +5,10 @@ on:
     branches:
       - 'rhoai-[0-9].[0-9]**'
     types: [closed]
-    paths: ['config/**']
+    paths: ['legacy/config/**']
   push:
     branches: [main]
-    paths: ['config/**']
+    paths: ['legacy/config/**']
   workflow_dispatch:
 
 permissions:
@@ -56,7 +56,7 @@ jobs:
           DEST="kserve/kserve-module/prefetched-manifests-rhoai/wva"
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp -r workload-variant-autoscaler/config/. "$DEST/"
+          cp -r workload-variant-autoscaler/legacy/config/. "$DEST/"
 
       - name: Detect changes
         id: changes
@@ -98,4 +98,3 @@ jobs:
           done
           echo "ERROR: All retries exhausted. Push failed." >&2
           exit 1
-
