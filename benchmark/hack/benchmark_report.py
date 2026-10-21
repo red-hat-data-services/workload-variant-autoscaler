@@ -1644,13 +1644,13 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(400, "Bad request: expected /results/<session-id>")
             return
         session_id = sid_match.group(0)
-        session_path = Path(session_id)
-        if session_path.is_absolute() or session_path.name != session_id:
+        safe_session_id = Path(session_id).name
+        if safe_session_id != session_id:
             self._send_error(400, "Bad request: invalid session id")
             return
 
         root = Path(self.workspace).resolve()
-        sid_path = Path(session_id)
+        sid_path = Path(safe_session_id)
         if sid_path.is_absolute() or any(part in ("", ".", "..") for part in sid_path.parts) or len(sid_path.parts) != 1:
             self._send_error(400, "Bad request: invalid session id")
             return
@@ -1667,7 +1667,7 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
 
         shutil.rmtree(target)
-        self._send_bytes(json.dumps({"deleted": session_id}).encode(), "application/json")
+        self._send_bytes(json.dumps({"deleted": safe_session_id}).encode(), "application/json")
 
     def _read_json_body(self):
         try:
