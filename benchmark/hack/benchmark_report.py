@@ -1644,6 +1644,10 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(400, "Bad request: expected /results/<session-id>")
             return
         session_id = sid_match.group(0)
+        session_path = Path(session_id)
+        if session_path.is_absolute() or session_path.name != session_id:
+            self._send_error(400, "Bad request: invalid session id")
+            return
 
         root = Path(self.workspace).resolve()
         sid_path = Path(session_id)
