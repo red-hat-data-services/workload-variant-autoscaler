@@ -1646,12 +1646,12 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
         session_id = sid_match.group(0)
 
         root = Path(self.workspace).resolve()
-        target = root / session_id
-        if os.path.islink(target) or target.resolve().parent != root or not target.is_dir():
+        target = (root / session_id).resolve()
+        if target.parent != root or target.is_symlink() or not target.is_dir():
             self._send_error(404, "Not found")
             return
 
-        shutil.rmtree(str(target))
+        shutil.rmtree(target)
         self._send_bytes(json.dumps({"deleted": session_id}).encode(), "application/json")
 
     def _read_json_body(self):
