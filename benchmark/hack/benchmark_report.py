@@ -1646,7 +1646,18 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
         session_id = sid_match.group(0)
 
         root = Path(self.workspace).resolve()
-        target = (root / session_id).resolve()
+        sid_path = Path(session_id)
+        if sid_path.is_absolute() or any(part in ("", ".", "..") for part in sid_path.parts) or len(sid_path.parts) != 1:
+            self._send_error(400, "Bad request: invalid session id")
+            return
+
+        target = (root / sid_path).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            self._send_error(404, "Not found")
+            return
+
         if target.parent != root or target.is_symlink() or not target.is_dir():
             self._send_error(404, "Not found")
             return
