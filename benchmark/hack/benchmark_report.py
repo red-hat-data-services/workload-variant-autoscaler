@@ -1649,25 +1649,17 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(400, "Bad request: invalid session id")
             return
 
-        root = Path(self.workspace).resolve()
-        sid_path = Path(safe_session_id)
-        if sid_path.is_absolute() or any(part in ("", ".", "..") for part in sid_path.parts) or len(sid_path.parts) != 1:
-            self._send_error(400, "Bad request: invalid session id")
-            return
-
-        target = (root / sid_path).resolve()
-        try:
-            target.relative_to(root)
-        except ValueError:
+        root = os.path.realpath(self.workspace)
+        target = os.path.realpath(os.path.join(root, session_id))
+        if not target.startswith(root + os.sep):
             self._send_error(404, "Not found")
             return
-
-        if target.parent != root or target.is_symlink() or not target.is_dir():
+        if os.path.islink(target) or not os.path.isdir(target):
             self._send_error(404, "Not found")
             return
 
         shutil.rmtree(target)
-        self._send_bytes(json.dumps({"deleted": safe_session_id}).encode(), "application/json")
+        self._send_bytes(json.dumps({"deleted": session_id}).encode(), "application/json")
 
     def _read_json_body(self):
         try:
