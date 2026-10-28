@@ -98,3 +98,47 @@ jobs:
           done
           echo "ERROR: All retries exhausted. Push failed." >&2
           exit 1
+      - name: Report notification configuration
+        # Make it visible in every run whether failure notifications are
+        # armed, and why not if they are not. Env-indirect so the webhook
+        # value is never interpolated into the script body.
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.RHOAI_DEVOPS_SLACK_WEBHOOK }}
+          SLACK_MENTIONS: ${{ vars.RHOAI_SLACK_MENTIONS }}
+        run: |
+          armed=true
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            armed=false
+            echo "::warning title=Slack notifications skipped::RHOAI_DEVOPS_SLACK_WEBHOOK secret is not set on this repository; failure notifications will not be posted."
+          else
+            echo "RHOAI_DEVOPS_SLACK_WEBHOOK is set."
+          fi
+          if [ -z "$SLACK_MENTIONS" ]; then
+            armed=false
+            echo "::warning title=Slack notifications skipped::RHOAI_SLACK_MENTIONS variable is not set on this repository; failure notifications will not be posted."
+          else
+            echo "RHOAI_SLACK_MENTIONS is set."
+          fi
+          if [ "$armed" = true ]; then
+            echo "Slack failure notifications are armed."
+          else
+            echo "::warning title=Slack notifications skipped::Failure notifications are disabled until both RHOAI_DEVOPS_SLACK_WEBHOOK and RHOAI_SLACK_MENTIONS are configured."
+          fi
+
+      - name: Notify on failure
+        # Dormant until RHOAI_DEVOPS_SLACK_WEBHOOK (secret) and
+        # RHOAI_SLACK_MENTIONS (variable, e.g. '<!subteam^S…>') are set.
+        if: >-
+          failure() &&
+          secrets.RHOAI_DEVOPS_SLACK_WEBHOOK != '' &&
+          vars.RHOAI_SLACK_MENTIONS != ''
+        uses: rtcamp/action-slack-notify@sha256:17fac87b8ea4ffec1f90b855f7f88e8fd69ec8568f690f4ea24d5a408eeee419a
+        env:
+          SLACK_WEBHOOK: ${{ secrets.RHOAI_DEVOPS_SLACK_WEBHOOK }}
+          SLACK_COLOR: danger
+          SLACK_TITLE: Manifest sync to kserve failed (workload-variant-autoscaler)
+          SLACK_MENTIONS: ${{ vars.RHOAI_SLACK_MENTIONS }}
+          SLACK_MESSAGE: |
+            sync-manifests-to-kserve failed on ${{ github.ref_name }}.
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
