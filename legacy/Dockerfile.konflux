@@ -18,7 +18,7 @@ COPY internal/ internal/
 RUN go mod download && \
     CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} GOEXPERIMENT=${GOEXPERIMENT} go build -a -o ${APP_ROOT}/manager cmd/main.go
 
-FROM registry.redhat.io/ubi9/ubi-minimal-pqc@sha256:72187ec58a94bd958ff48e41881d7c5d8bc0b49586cc1661da5ba4d92374c206 AS deploy
+FROM registry.redhat.io/ubi9/ubi-minimal-pqc@sha256:58d09489b1d9123e24d691e47af6c390fe5e08f50c7f4f2967bb64df7ab72aa0 AS deploy
 
 ARG APP_BUILD_ROOT
 
