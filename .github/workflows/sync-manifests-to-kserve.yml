@@ -21,6 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TARGET_BRANCH: ${{ github.event_name == 'pull_request_target' && github.base_ref || github.ref_name }}
+      # Hoisted to job env so step-level `if:` conditions can read them; the
+      # secrets context is not available in step-level if expressions.
+      SLACK_WEBHOOK: ${{ secrets.RHOAI_DEVOPS_SLACK_WEBHOOK }}
+      SLACK_MENTIONS: ${{ vars.RHOAI_SLACK_MENTIONS }}
     steps:
       - name: Print sync parameters
         run: |
@@ -103,9 +107,6 @@ jobs:
         # armed, and why not if they are not. Env-indirect so the webhook
         # value is never interpolated into the script body.
         if: always()
-        env:
-          SLACK_WEBHOOK: ${{ secrets.RHOAI_DEVOPS_SLACK_WEBHOOK }}
-          SLACK_MENTIONS: ${{ vars.RHOAI_SLACK_MENTIONS }}
         run: |
           armed=true
           if [ -z "$SLACK_WEBHOOK" ]; then
@@ -129,16 +130,16 @@ jobs:
       - name: Notify on failure
         # Dormant until RHOAI_DEVOPS_SLACK_WEBHOOK (secret) and
         # RHOAI_SLACK_MENTIONS (variable, e.g. '<!subteam^S…>') are set.
+        # Gated on job env because the secrets context is not available
+        # in step-level if expressions.
         if: >-
           failure() &&
-          secrets.RHOAI_DEVOPS_SLACK_WEBHOOK != '' &&
-          vars.RHOAI_SLACK_MENTIONS != ''
+          env.SLACK_WEBHOOK != '' &&
+          env.SLACK_MENTIONS != ''
         uses: rtcamp/action-slack-notify@sha256:17fac87b8ea4ffec1f90b855f7f88e8fd69ec8568f690f4ea24d5a408eeee419a
         env:
-          SLACK_WEBHOOK: ${{ secrets.RHOAI_DEVOPS_SLACK_WEBHOOK }}
           SLACK_COLOR: danger
           SLACK_TITLE: Manifest sync to kserve failed (workload-variant-autoscaler)
-          SLACK_MENTIONS: ${{ vars.RHOAI_SLACK_MENTIONS }}
           SLACK_MESSAGE: |
             sync-manifests-to-kserve failed on ${{ github.ref_name }}.
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
