@@ -14,7 +14,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
   labels:
     appstudio.openshift.io/application: automation
-    appstudio.openshift.io/component: pull-request-pipelines-odh-workload-variant-autoscaler-controller
+    appstudio.openshift.io/component: pull-request-pipelines-odh-workload-variant-autoscaler
     pipelines.appstudio.openshift.io/type: build
   name: odh-workload-variant-autoscaler-controller-on-pull-request-83472
   namespace: rhoai-tenant
@@ -39,8 +39,6 @@ spec:
     value:
     - linux/x86_64
     - linux-m2xlarge/arm64
-  - name: image-expires-after
-    value: 5d
   - name: dockerfile
     value: Dockerfile.konflux
   - name: path-context
