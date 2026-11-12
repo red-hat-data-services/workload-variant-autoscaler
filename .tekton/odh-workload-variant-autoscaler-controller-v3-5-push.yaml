@@ -31,7 +31,7 @@ spec:
   - name: output-image
     value: quay.io/rhoai/odh-workload-variant-autoscaler-controller-rhel9:{{target_branch}}
   - name: rhoai-version
-    value: "3.5.3"
+    value: "3.5.4"
   - name: dockerfile
     value: Dockerfile.konflux
   - name: path-context
@@ -60,15 +60,6 @@ spec:
       value: '{{ target_branch }}'
     - name: pathInRepo
       value: pipelines/multi-arch-container-build.yaml
-  taskRunSpecs:
-  - pipelineTaskName: rpms-signature-scan
-    computeResources:
-      requests:
-        cpu: 2600m
-        memory: 512Mi
-      limits:
-        cpu: 2600m
-        memory: 512Mi
   taskRunTemplate:
     serviceAccountName: build-pipeline-odh-workload-variant-autoscaler-controller-v3-5
   workspaces:
